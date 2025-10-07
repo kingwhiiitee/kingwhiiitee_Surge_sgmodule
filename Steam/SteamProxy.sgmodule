@@ -1,0 +1,10 @@
+#!name= Steam代理分流规则
+#!desc= 代理部分
+#!author= kingwhiiitee
+[Rule]
+DOMAIN-SUFFIX,steamcommunity.com,香港
+DOMAIN-SUFFIX,steampowered.com,香港
+DOMAIN-SUFFIX,steamgames.com,香港
+DOMAIN-SUFFIX,steam.tv,香港
+DOMAIN-SUFFIX,valvesoftware.com,香港
+DOMAIN-KEYWORD,steam,香港
