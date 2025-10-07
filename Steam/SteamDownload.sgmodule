@@ -1,4 +1,5 @@
-#!name= Steam分流规则
+#!name= Steam下载分流规则
+#!desc= 直连下载部分
 #!author= kingwhiiitee
 [Rule]
 DOMAIN-SUFFIX,steamcontent.com,DIRECT
@@ -10,9 +11,3 @@ DOMAIN-KEYWORD,steampipe,DIRECT
 IP-CIDR,103.10.124.0/23,DIRECT
 IP-CIDR,119.28.16.0/24,DIRECT
 IP-CIDR,203.77.185.0/24,DIRECT
-DOMAIN-SUFFIX,steamcommunity.com,香港
-DOMAIN-SUFFIX,steampowered.com,香港
-DOMAIN-SUFFIX,steamgames.com,香港
-DOMAIN-SUFFIX,steam.tv,香港
-DOMAIN-SUFFIX,valvesoftware.com,香港
-DOMAIN-KEYWORD,steam,香港
