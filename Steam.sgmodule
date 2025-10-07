@@ -1,0 +1,18 @@
+#!name= Steam分流规则
+#!author= kingwhiiitee
+[Rule]
+DOMAIN-SUFFIX,steamcontent.com,DIRECT
+DOMAIN-SUFFIX,steamserver.net,DIRECT
+DOMAIN-SUFFIX,steamusercontent.com,DIRECT
+DOMAIN-SUFFIX,cm.steampowered.com,DIRECT
+DOMAIN-KEYWORD,steamcdn,DIRECT
+DOMAIN-KEYWORD,steampipe,DIRECT
+IP-CIDR,103.10.124.0/23,DIRECT
+IP-CIDR,119.28.16.0/24,DIRECT
+IP-CIDR,203.77.185.0/24,DIRECT
+DOMAIN-SUFFIX,steamcommunity.com,香港
+DOMAIN-SUFFIX,steampowered.com,香港
+DOMAIN-SUFFIX,steamgames.com,香港
+DOMAIN-SUFFIX,steam.tv,香港
+DOMAIN-SUFFIX,valvesoftware.com,香港
+DOMAIN-KEYWORD,steam,香港
