@@ -8,12 +8,12 @@ const SRC=fs.readFileSync(require('path').join(__dirname,'youtube_subtitle.js'),
 let pass=0,fail=0;
 const ok=(n,c)=>{c?(pass++,console.log('  ok  '+n)):(fail++,console.log('  FAIL '+n));};
 
-function run({url,body,headers=undefined,store={},post,fastTimers=false}){
+function run({url,body,headers=undefined,store={},post,fastTimers=false,onWrite}){
   return new Promise(res=>{
     const s=Object.assign({'youtube_subtitle.api_key':'k'},store);
     const ctx={console,JSON,Math,Date,Object,Array,Map,Set,String,Number,Promise,RegExp,Error,parseInt,isNaN,
       $request:{url},$response:{body,headers},
-      $persistentStore:{read:k=>s[k],write:(v,k)=>{s[k]=v;return true;}},
+      $persistentStore:{read:k=>s[k],write:(v,k)=>{s[k]=v;if(onWrite)onWrite(k,v);return true;}},
       $httpClient:{post},
       $done:r=>res({out:r,store:s}),
       // fastTimers 把时钟缩放 1000 倍，让 15s 超时在毫秒级内跑完
@@ -138,6 +138,22 @@ r=await run({url:U,body:SRV3,store:st,post:reply(l=>'C:'+l)});
 let n=0;
 r=await run({url:U,body:SRV3,store:r.store,post:(o,cb)=>{n++;reply(l=>'X')(o,cb);}});
 ok('二次命中缓存不再请求', n===0 && r.out.body.includes('C:Hello'));
+
+// 25 个 cue（>CHUNK_LINES=20）→ 2 个分块；每个分块完成即应有一次缓存写入，
+// 加末尾终写共 3 次——脚本被中途掐断时已翻进度也已落盘
+console.log('增量落盘');
+const BIG='<timedtext><body>'+Array.from({length:25},(_,i)=>`<p t="${i}" d="1">line${i}</p>`).join('')+'</body></timedtext>';
+let writes=0,firstWriteLines=[];
+let bigCalls=0;
+const bigPost=(o,cb)=>{const i=++bigCalls;const lines=JSON.parse(JSON.parse(o.body).messages[1].content);
+  // 第 1 块延迟最大，保证第 2 块先完成——首写若已含它，证明是增量落盘
+  setTimeout(()=>cb(null,{status:200},JSON.stringify({choices:[{message:{content:JSON.stringify({translations:lines.map(l=>'T:'+l)})}}]})),i===1?20:1);};
+r=await run({url:U,body:BIG,post:bigPost,onWrite:(k,v)=>{
+  if(k==='youtube_subtitle.cache.data'){writes++;
+    if(writes===1)firstWriteLines=(v.match(/"line\d+"/g)||[]);}}});
+ok('每个分块完成即写缓存', writes===3);
+ok('首写在第 1 块完成前已落盘（含 line20 不含 line0）',
+  firstWriteLines.includes('"line20"') && !firstWriteLines.includes('"line0"'));
 
 console.log('放行');
 r=await run({url:U+'&tlang=zh',body:SRV3,post:reply(l=>'T')});
