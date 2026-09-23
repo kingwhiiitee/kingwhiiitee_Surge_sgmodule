@@ -3,7 +3,8 @@
  * - 图文笔记：关闭 media_save_config 的保存限制与水印，放行 image_download 开关
  * - 视频笔记：同上并放行 video_download 入口，按 note_id 缓存最优流地址
  * - 实况照片/视频保存：用缓存的无水印流地址重写 save 响应中的下载地址
- * - 评论区：贴纸类评论转图片类型（可保存），剥离水印中携带的 red_id
+ * - 评论区：贴纸类评论转图片类型（可保存），剥离水印中携带的 red_id；
+ *   评论实况图/视频的 video_id 缓存无水印流地址，重写下载响应中的 video_url
  * 配合 [Map Local] 将水印配置图替换为 1px 透明图，客户端无法叠加水印。
  */
 
@@ -16,6 +17,9 @@ const LP_MAX = 300;
 const VID_PREFIX = "kingwhiiitee.xhs.vid.";
 const VID_INDEX_KEY = "kingwhiiitee.xhs.vid.idx";
 const VID_MAX = 200;
+const CM_PREFIX = "kingwhiiitee.xhs.cm.";
+const CM_INDEX_KEY = "kingwhiiitee.xhs.cm.idx";
+const CM_MAX = 300;
 
 const readStore = (key) =>
   typeof $persistentStore !== "undefined"
@@ -117,6 +121,21 @@ const unlockSave = (item, switchTypes) => {
   }
 };
 
+// 评论媒体：pictures/videos 条目的 video_info 为 JSON 字符串，含 stream.h265/h264
+const collectCommentMedia = (c, pending) => {
+  for (const list of [c?.pictures, c?.videos]) {
+    if (!Array.isArray(list)) continue;
+    for (const p of list) {
+      if (!p?.video_id || !p?.video_info) continue;
+      try {
+        const info = typeof p.video_info === "string" ? JSON.parse(p.video_info) : p.video_info;
+        const streamUrl = bestMediaUrl(info);
+        if (streamUrl) pending.push([p.video_id, streamUrl]);
+      } catch (e) {}
+    }
+  }
+};
+
 // share_info.function_entries 里补充下载入口（没有才加）
 const ensureDownloadEntry = (item) => {
   const entries = item?.share_info?.function_entries;
@@ -210,15 +229,24 @@ if (obj == null) {
         for (const key of Object.keys(node)) stripRedId(node[key]);
       }
     };
+    const cmPending = [];
     const fixComment = (c) => {
       if (c?.comment_type === 3) c.comment_type = 2;
       if (c?.media_source_type === 1) c.media_source_type = 0;
+      collectCommentMedia(c, cmPending);
       for (const sc of c?.sub_comments || []) fixComment(sc);
     };
     stripRedId(obj);
     for (const c of [...(obj?.data?.comments || []), ...(obj?.data?.sub_comments || [])]) {
       fixComment(c);
     }
+    if (cmPending.length) saveUrls(CM_PREFIX, CM_INDEX_KEY, CM_MAX, cmPending);
+  }
+
+  // 评论区媒体下载：按 video_id 命中缓存重写 video_url
+  if (url.includes("/interaction/comment/video/download") && obj?.data?.video?.video_id) {
+    const streamUrl = getStoredUrl(CM_PREFIX, obj.data.video.video_id);
+    if (streamUrl) obj.data.video.video_url = streamUrl;
   }
 
   $done({ body: JSON.stringify(obj) });
