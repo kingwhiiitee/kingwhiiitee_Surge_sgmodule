@@ -40,6 +40,72 @@ ok('karaoke <s> 拍平', r.out.body.includes('>Are you ok?\n【Are you ok?】<')
 ok('空白 cue 原样', r.out.body.includes('<p t="2000" d="500"> </p>'));
 ok('XML 头与根保留', r.out.body.startsWith('<?xml') && r.out.body.endsWith('</timedtext>'));
 
+console.log('自动字幕 kind=asr');
+const ASR_SRV3='<?xml version="1.0" encoding="utf-8"?><timedtext format="3"><body>'+
+ '<p t="0" d="1200" w="1"><s ac="0">Hello</s><s t="300" ac="0"> world</s></p>'+
+ '<p t="1200" d="10" w="1" a="1"></p>'+
+ '<p t="1300" d="800" w="1" a="1">carry over</p></body></timedtext>';
+let asrCalls=0;
+const asrPost=(o,cb)=>{asrCalls++;reply(l=>'译'+l)(o,cb);};
+r=await run({url:U+'&kind=asr&fmt=srv3',body:ASR_SRV3,post:asrPost});
+const asrCues=r.out.body.match(/<p\b[^>]*>[\s\S]*?<\/p>/g)||[];
+const translatedCue=asrCues[0]||'';
+ok('自动字幕普通 cue 双语', translatedCue.includes('>Hello world\n译Hello world<'));
+ok('自动字幕空追加 cue 原样', r.out.body.includes('<p t="1200" d="10" w="1" a="1"></p>'));
+ok('自动字幕文本追加 cue 原样', r.out.body.includes('<p t="1300" d="800" w="1" a="1">carry over</p>'));
+ok('自动字幕追加 cue 不附译文', asrCues.length===3 && !asrCues[1].includes('译') && !asrCues[2].includes('译'));
+ok('自动字幕译文 cue 保留起点', translatedCue.includes('t="0"'));
+ok('自动字幕译文 cue 保留时长', translatedCue.includes('d="1200"'));
+ok('自动字幕译文 cue 移除滚动窗口属性', !translatedCue.includes('w="'));
+ok('自动字幕译文 cue 移除追加属性', !translatedCue.includes('a="'));
+ok('自动字幕请求 LLM', asrCalls>0);
+
+console.log('自动字幕 重叠时长收拢');
+const OVERLAP='<timedtext format="3"><body>'+
+ '<p t="1040" d="3360" w="1" ws="1" wp="1">welcome to chaos</p>'+
+ '<p t="2710" d="1690" w="1" a="1"></p>'+
+ '<p t="2720" d="2960" w="1">edition enjoy</p></body></timedtext>';
+r=await run({url:U+'&kind=asr&fmt=srv3',body:OVERLAP,post:reply(l=>'译'+l)});
+const oc=r.out.body.match(/<p\b[^>]*>[\s\S]*?<\/p>/g)||[];
+ok('重叠 cue 时长收到下一条有文字 cue 起点', oc[0].includes('d="1680"'));
+ok('收拢不改起点', oc[0].includes('t="1040"'));
+ok('末条 cue 无后继则时长不变', oc[2].includes('d="2960"'));
+ok('清除 ws 滚动样式引用', !oc[0].includes('ws="'));
+ok('清除 wp 滚动位置引用', !oc[0].includes('wp="'));
+ok('空追加 cue 不参与收拢判定', r.out.body.includes('<p t="2710" d="1690" w="1" a="1"></p>'));
+
+const NOOVERLAP='<timedtext format="3"><body>'+
+ '<p t="0" d="900">one</p><p t="1000" d="900">two</p></body></timedtext>';
+r=await run({url:U,body:NOOVERLAP,post:reply(l=>'译'+l)});
+ok('普通不重叠字幕时长不被改动', r.out.body.includes('d="900">one\n译one<') && r.out.body.includes('d="900">two\n译two<'));
+
+console.log('自动字幕 json3');
+const ASR_JSON=JSON.stringify({events:[
+  {tStartMs:0,dDurationMs:1200,wWinId:1,wpWinPosId:2,wsWinStyleId:3,segs:[{utf8:'Hello'},{utf8:' world'}]},
+  {aAppend:1,segs:[{utf8:'\n'}]}
+],wpWinPositions:[{id:0}],wsWinStyles:[{id:0}]});
+r=await run({url:'https://www.youtube.com/api/timedtext?v=x&lang=en&kind=asr&fmt=json3',body:ASR_JSON,post:asrPost});
+const asrJson=JSON.parse(r.out.body);
+const asrEvent=asrJson.events[0],asrAppend=asrJson.events[1];
+ok('自动字幕 json3 普通 event 双语', asrEvent.segs[0].utf8==='Hello world\n译Hello world');
+ok('自动字幕 json3 移除 wWinId', !('wWinId' in asrEvent));
+ok('自动字幕 json3 移除 wpWinPosId', !('wpWinPosId' in asrEvent));
+ok('自动字幕 json3 移除 wsWinStyleId', !('wsWinStyleId' in asrEvent));
+ok('自动字幕 json3 保留顶层窗口定义表', Array.isArray(asrJson.wpWinPositions) && Array.isArray(asrJson.wsWinStyles));
+ok('自动字幕 json3 追加 event 保留 aAppend', asrAppend.aAppend===1);
+ok('自动字幕 json3 追加 event 保留原始 segs', asrAppend.segs.length===1 && asrAppend.segs[0].utf8==='\n');
+
+const OVERLAP_JSON=JSON.stringify({events:[
+  {tStartMs:80,dDurationMs:3440,wWinId:1,segs:[{utf8:'first'}]},
+  {aAppend:1,segs:[{utf8:'\n'}]},
+  {tStartMs:1880,dDurationMs:2000,wWinId:1,segs:[{utf8:'second'}]}
+]});
+r=await run({url:'https://www.youtube.com/api/timedtext?v=x&lang=en&kind=asr&fmt=json3',body:OVERLAP_JSON,post:reply(l=>'译'+l)});
+const oj=JSON.parse(r.out.body).events;
+ok('json3 重叠 event 时长收到下一条起点', oj[0].dDurationMs===1800);
+ok('json3 收拢不改起点', oj[0].tStartMs===80);
+ok('json3 末条 event 时长不变', oj[2].dDurationMs===2000);
+
 console.log('position=above / only');
 r=await run({url:U,body:SRV3,store:{'youtube_subtitle.position':'above'},post:reply(l=>'T:'+l)});
 ok('above 译上原下', r.out.body.includes('>T:Hello\nHello<'));
