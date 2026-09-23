@@ -13,6 +13,7 @@
         "youtube_subtitle.base_url",
         "youtube_subtitle.model",
         "youtube_subtitle.target_lang",
+        "youtube_subtitle.target_code",
         "youtube_subtitle.position",
         "youtube_subtitle.cache",
         "youtube_subtitle.budget_ms",
@@ -27,16 +28,17 @@
           "type": "radios",
           "items": [
             { "key": "deepseek", "label": "DeepSeek" },
-            { "key": "openai", "label": "OpenAI" }
+            { "key": "openai", "label": "OpenAI" },
+            { "key": "google", "label": "谷歌翻译" }
           ],
-          "desc": "选择 AI 翻译服务，需填写对应的 API Key"
+          "desc": "DeepSeek / OpenAI 为 AI 翻译，译文更自然，但需填写 API Key 且速度较慢；谷歌翻译免费、无需 API Key，速度快很多，适合长视频或 AI 翻译总是超时的情况，但译文较生硬"
         },
         {
           "id": "youtube_subtitle.api_key",
           "name": "API Key",
           "val": "",
           "type": "text",
-          "desc": "DeepSeek 在 platform.deepseek.com 创建；OpenAI 在 platform.openai.com 创建。未填写时字幕保持原文"
+          "desc": "DeepSeek 在 platform.deepseek.com 创建；OpenAI 在 platform.openai.com 创建。未填写时字幕保持原文。选择谷歌翻译时此项留空即可，无需申请"
         },
         {
           "id": "youtube_subtitle.base_url",
@@ -58,6 +60,13 @@
           "val": "简体中文",
           "type": "text",
           "desc": "译文语言，可填任意语言（如 繁體中文、English、日本語、한국어）"
+        },
+        {
+          "id": "youtube_subtitle.target_code",
+          "name": "目标语言代码(谷歌)",
+          "val": "",
+          "type": "text",
+          "desc": "仅谷歌翻译使用；留空时脚本会按上面的「目标语言」自动匹配，常见语言无需填写；需要时可手动填写语言代码，如简体中文 zh-CN、繁体中文 zh-TW、英语 en、日语 ja、韩语 ko"
         },
         {
           "id": "youtube_subtitle.position",
