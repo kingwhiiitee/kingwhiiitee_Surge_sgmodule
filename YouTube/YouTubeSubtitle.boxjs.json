@@ -15,6 +15,8 @@
         "youtube_subtitle.target_lang",
         "youtube_subtitle.position",
         "youtube_subtitle.cache",
+        "youtube_subtitle.budget_ms",
+        "youtube_subtitle.mode",
         "youtube_subtitle.cache.data"
       ],
       "settings": [
@@ -75,6 +77,26 @@
           "val": true,
           "type": "boolean",
           "desc": "按行缓存译文（服务商|模型|原文语言|目标语言 分组，跨视频复用）。已翻行永不重翻，失败行下次请求自动续翻"
+        },
+        {
+          "id": "youtube_subtitle.budget_ms",
+          "name": "翻译时限(毫秒)",
+          "val": "20000",
+          "type": "text",
+          "desc": "单次字幕请求最多花在翻译上的时间。超时后本轮翻出多少显示多少，其余下次开字幕自动续翻。调小可避免 YouTube App 等待超时报\"加载字幕出错\"；调大可一次翻更多，但超时风险更高。最小 3000 毫秒"
+        },
+        {
+          "id": "youtube_subtitle.mode",
+          "name": "运行模式(排错用)",
+          "val": "on",
+          "type": "radios",
+          "items": [
+            { "key": "on", "label": "正常双语" },
+            { "key": "passthrough", "label": "只翻译不回写" },
+            { "key": "headers", "label": "只修响应头" },
+            { "key": "off", "label": "完全不处理" }
+          ],
+          "desc": "排查\"加载字幕出错\"用的分级开关：正常双语供日常使用；只翻译不回写会跑完整个翻译流程，但最终返回原始字幕，用来判断问题是否出在改写字幕内容上；只修响应头不做翻译，仅修正响应头后返回原字幕，用来判断问题是否出在响应头；完全不处理等同于停用本模块，用来确认问题是否与脚本无关。切换后需重新打开字幕才生效"
         }
       ],
       "author": "@kingwhiiitee",

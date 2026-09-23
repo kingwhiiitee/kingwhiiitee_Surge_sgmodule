@@ -8,11 +8,11 @@ const SRC=fs.readFileSync(require('path').join(__dirname,'youtube_subtitle.js'),
 let pass=0,fail=0;
 const ok=(n,c)=>{c?(pass++,console.log('  ok  '+n)):(fail++,console.log('  FAIL '+n));};
 
-function run({url,body,store={},post,fastTimers=false}){
+function run({url,body,headers=undefined,store={},post,fastTimers=false}){
   return new Promise(res=>{
     const s=Object.assign({'youtube_subtitle.api_key':'k'},store);
     const ctx={console,JSON,Math,Date,Object,Array,Map,Set,String,Number,Promise,RegExp,Error,parseInt,isNaN,
-      $request:{url},$response:{body},
+      $request:{url},$response:{body,headers},
       $persistentStore:{read:k=>s[k],write:(v,k)=>{s[k]=v;return true;}},
       $httpClient:{post},
       $done:r=>res({out:r,store:s}),
@@ -146,6 +146,56 @@ r=await run({url:U,body:SRV3,store:{'youtube_subtitle.api_key':''},post:reply(l=
 ok('无 key 原样放行', r.out.body===SRV3);
 r=await run({url:'https://www.youtube.com/api/timedtext?v=x&fmt=vtt',body:'WEBVTT',post:reply(l=>'T')});
 ok('vtt 不处理', r.out.body==='WEBVTT');
+
+console.log('响应头清洗');
+const originalHeaders={'Content-Length':'123','Content-Encoding':'gzip','Content-Type':'application/xml','X-Keep':'1'};
+r=await run({url:U,body:SRV3,headers:originalHeaders,post:reply(l=>'H:'+l)});
+const cleanedKeys=Object.keys(r.out.headers||{}).map(k=>k.toLowerCase());
+ok('翻译后回写响应头', !!r.out.headers);
+ok('移除 Content-Length', !cleanedKeys.includes('content-length'));
+ok('移除 Content-Encoding', !cleanedKeys.includes('content-encoding'));
+ok('保留 Content-Type', r.out.headers && r.out.headers['Content-Type']==='application/xml');
+ok('保留 X-Keep', r.out.headers && r.out.headers['X-Keep']==='1');
+r=await run({url:U,body:SRV3,headers:{'content-length':'123','content-encoding':'br'},post:reply(l=>'H:'+l)});
+const lowerKeys=Object.keys(r.out.headers||{}).map(k=>k.toLowerCase());
+ok('小写 content-length 也被移除', !!r.out.headers && !lowerKeys.includes('content-length'));
+ok('小写 content-encoding 也被移除', !!r.out.headers && !lowerKeys.includes('content-encoding'));
+r=await run({url:U,body:SRV3,post:reply(l=>'H:'+l)});
+ok('缺少响应头仍回写双语 body', 'body' in r.out && r.out.body.includes('>Hello\nH:Hello<'));
+r=await run({url:U,body:SRV3,headers:originalHeaders,store:{'youtube_subtitle.api_key':''},post:reply(l=>'H:'+l)});
+const passKeys=Object.keys(r.out.headers||{}).map(k=>k.toLowerCase());
+ok('放行时回写原始 body', r.out.body===SRV3);
+ok('放行时也清洗响应头', !!r.out.headers && !passKeys.includes('content-length') && !passKeys.includes('content-encoding'));
+
+console.log('运行模式');
+let offCalls=0;
+r=await run({url:U,body:SRV3,headers:originalHeaders,store:{'youtube_subtitle.mode':'off'},post:()=>{offCalls++;}});
+ok('off 不回写 body', !('body' in r.out));
+ok('off 不回写 headers', !('headers' in r.out));
+ok('off 不调用翻译接口', offCalls===0);
+let headersCalls=0;
+r=await run({url:U,body:SRV3,headers:originalHeaders,store:{'youtube_subtitle.mode':'headers'},post:()=>{headersCalls++;}});
+const headersModeKeys=Object.keys(r.out.headers||{}).map(k=>k.toLowerCase());
+ok('headers 返回原始 body', r.out.body===SRV3);
+ok('headers 清洗响应头', !!r.out.headers && !headersModeKeys.includes('content-length') && !headersModeKeys.includes('content-encoding'));
+ok('headers 不调用翻译接口', headersCalls===0);
+let passthroughCalls=0;
+r=await run({url:U,body:SRV3,store:{'youtube_subtitle.mode':'passthrough'},post:(o,cb)=>{passthroughCalls++;reply(l=>'P:'+l)(o,cb);}});
+ok('passthrough 返回原始 body', r.out.body===SRV3);
+ok('passthrough 仍调用翻译接口', passthroughCalls>0);
+const passthroughStore=r.store;
+passthroughStore['youtube_subtitle.mode']='on';
+r=await run({url:U,body:SRV3,store:passthroughStore,post:reply(l=>'N:'+l)});
+ok('passthrough 后切回 on 仍产出双语', /<p t="0" d="1000">Hello\n[PN]:Hello<\/p>/.test(r.out.body));
+r=await run({url:U,body:SRV3,store:{},post:reply(l=>'D:'+l)});
+ok('未设置 mode 默认产出双语', r.out.body.includes('>Hello\nD:Hello<'));
+
+console.log('翻译时限可配');
+t0=Date.now();
+r=await run({url:U,body:SRV3,store:{'youtube_subtitle.budget_ms':'3000'},post:hang,fastTimers:true});
+ok('3000ms 时限快速回退原文', r.out.body===SRV3 && Date.now()-t0<1000);
+r=await run({url:U,body:SRV3,store:{'youtube_subtitle.budget_ms':'abc'},post:reply(l=>'B:'+l)});
+ok('非法时限回退默认值并正常翻译', r.out.body.includes('>Hello\nB:Hello<'));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
