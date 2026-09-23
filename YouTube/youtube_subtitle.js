@@ -9,6 +9,7 @@
  *   的 cue 时长收到下一条起点，让滚动字幕退化为不堆叠的静态双语 cue
  * - 参数全部在 BoxJS《YouTube AI双语字幕》中调整：
  *   服务商 / API Key / Base URL / 模型 / 目标语言 / 双语位置 / 翻译缓存
+ * - BoxJS 可调整 mode 四档诊断开关与 budget_ms；日志前缀为 [yt-sub]
  * - App 内手动选择"自动翻译"语言的请求（URL 带 tlang）原样放行；
  *   未配置 API Key、格式不识别或翻译失败时同样原样返回，不影响原始字幕
  * - 缓存按行存"译文字典"（key=服务商|模型|源语言|目标语言），与字幕格式/双语位置
@@ -25,7 +26,8 @@ const CONCURRENCY = 3; // 并发翻译请求数
 const API_TIMEOUT = 15; // 单次 LLM 请求超时（秒）
 // 全局翻译时限。瓶颈不是模块 timeout=120，而是 YouTube App 自己的请求超时：
 // 等不到响应它直接显示"加载字幕出错"。宁可本轮只翻一部分——翻出的行进缓存，
-// 剩下的下次开字幕自动续翻，逐步收敛到完整双语
+// 剩下的下次开字幕自动续翻，逐步收敛到完整双语。可被 BoxJS 的
+// youtube_subtitle.budget_ms 覆盖
 const BUDGET_MS = 20 * 1000;
 const CACHE_KEY = "youtube_subtitle.cache.data";
 const CACHE_MAX = 6; // 缓存的 服务商|模型|目标语言 组合数（LRU）
@@ -37,8 +39,11 @@ const readKey = (n, dft) => {
   return v === undefined || v === null || v === "" ? dft : v;
 };
 
+// mode: on 正常双语；passthrough 完整翻译后回原始 body；headers 仅清洗响应头；off 完全不处理
 const cfg = {
   provider: readKey("provider", "deepseek"),
+  mode: readKey("mode", "on"),
+  budgetMs: Math.max(3000, parseInt(readKey("budget_ms", "20000"), 10) || 20000),
   apiKey: readKey("api_key", ""),
   baseUrl: readKey("base_url", ""),
   model: readKey("model", ""),
@@ -55,6 +60,8 @@ const endpoint = /\/chat\/completions$/.test(baseEp)
   : `${baseEp}/chat/completions`;
 const model = cfg.model || provider.model;
 
+const T0 = Date.now();
+const ms = () => Date.now() - T0;
 const log = (m) => console.log(`[yt-sub] ${m}`);
 if (/^http:\/\//i.test(endpoint)) log("WARN: http:// 端点，API Key 将明文传输");
 
@@ -110,6 +117,22 @@ const compose = (orig, trans, br) => {
   return cfg.position === "above"
     ? `${trans}${br}${orig}`
     : `${orig}${br}${trans}`;
+};
+
+// Surge 交给脚本的是已解压的 body，而原始响应头里的 Content-Length 仍是
+// 原文长度、Content-Encoding 仍写着 gzip/br。双语回写后 body 变长，沿用旧头
+// 会让 App 按旧长度截断读取、或把明文当压缩数据解 -- 表现就是"加载字幕出错"。
+// 这两个头必须去掉，交给 Surge 重新计算
+const cleanHeaders = () => {
+  const h = (typeof $response !== "undefined" && $response && $response.headers) || null;
+  if (!h) return null;
+  const out = {};
+  for (const k of Object.keys(h)) {
+    const lk = k.toLowerCase();
+    if (lk === "content-length" || lk === "content-encoding") continue;
+    out[k] = h[k];
+  }
+  return out;
 };
 
 // 解析字幕正文，返回 {format, items:[{text}], rebuild(map)}
@@ -424,22 +447,34 @@ const saveCache = (c) => {
 
 (async () => {
   const body = $response.body;
-  const finish = (b) => (b == null ? $done({}) : $done({ body: b }));
+  const finish = (b, why) => {
+    log(`done ${why} ${ms()}ms out=${b == null ? "unmodified" : b.length}`);
+    if (b == null) return $done({});
+    const headers = cleanHeaders();
+    return $done(headers ? { body: b, headers } : { body: b });
+  };
   try {
+    log("in=" + (body == null ? 0 : body.length) + " mode=" + cfg.mode);
+    if (cfg.mode === "off") {
+      log(`mode=off, untouched ${ms()}ms`);
+      return $done({});
+    }
+    if (!body) return finish(null, "no-body");
+    if (cfg.mode === "headers") return finish(body, "mode=headers");
     const url = $request.url || "";
-    if (!body) return finish(null);
     if (!cfg.apiKey) {
       log("no api_key, pass through (BoxJS 中填写 youtube_subtitle.api_key)");
-      return finish(body);
+      return finish(body, "no-key");
     }
     if (getParam(url, "tlang")) {
       log("tlang present (app 内自动翻译), pass through");
-      return finish(body);
+      return finish(body, "tlang");
     }
     const format = detectFormat(url, body);
-    if (!format) return finish(body);
+    if (!format) return finish(body, "unknown-format");
     const parsed = parseSubtitles(format, body);
-    if (!parsed || !parsed.items.length) return finish(body);
+    if (!parsed || !parsed.items.length) return finish(body, "parse-empty");
+    log(`format=${format} parse=${ms()}ms`);
 
     const v = getParam(url, "v") || "";
     const lang = getParam(url, "lang") || "";
@@ -464,8 +499,10 @@ const saveCache = (c) => {
     log(`${v} ${lang} kind=${kind || "manual"} cues=${texts.length} unique=${unique.length} miss=${missing.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
 
     if (missing.length) {
-      const deadline = Date.now() + BUDGET_MS;
+      const deadline = Date.now() + cfg.budgetMs;
+      log(`translate start ${ms()}ms`);
       const got = await translateAll(missing, deadline);
+      log(`translate done ${ms()}ms`);
       for (const [k, t] of got) dict[k] = t;
     }
 
@@ -476,9 +513,10 @@ const saveCache = (c) => {
     }
     if (!map.size) {
       log("no translations available, keep original");
-      return finish(body);
+      return finish(body, "no-translation");
     }
     const merged = parsed.rebuild(map);
+    log(`rebuild done ${ms()}ms out=${merged.length}`);
 
     if (cache) {
       // 命中也刷新 LRU；保存前重读缓存再合并——缩小并发覆盖窗口。
@@ -506,9 +544,10 @@ const saveCache = (c) => {
       fresh.data[dictKey] = mergedDict;
       saveCache(fresh);
     }
-    return finish(merged);
+    if (cfg.mode === "passthrough") return finish(body, "mode=passthrough");
+    return finish(merged, "ok");
   } catch (e) {
     log(`fatal ${e && e.stack ? e.stack : e}`);
-    return finish(body);
+    return finish(body, "fatal");
   }
 })();
