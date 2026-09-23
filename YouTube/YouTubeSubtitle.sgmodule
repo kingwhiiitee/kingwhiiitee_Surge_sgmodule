@@ -1,8 +1,10 @@
 #!name= YouTube AI双语字幕
-#!desc= YouTube App 双语字幕：开启字幕后自动将每条字幕翻译并以"原文+译文"同屏显示，翻译由 AI（DeepSeek / OpenAI）或免费无需 Key 的谷歌翻译完成（三选一）。需在 BoxJS 中订阅「YouTube AI双语字幕」，选 DeepSeek / OpenAI 时须填写对应 API Key，选谷歌翻译则无需任何配置即可使用，订阅地址：https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/YouTube/YouTubeSubtitle.boxjs.json 。服务商、API Key、Base URL、模型、目标语言、目标语言代码、双语位置、翻译缓存均可在 BoxJS 调整。需开启 MITM 并信任证书；首次开启字幕时按视频长度等待数秒至数十秒完成翻译，之后命中缓存。App 内手动选择"自动翻译"语言时不处理；使用 AI 服务商但未配置 Key、或翻译失败时保持原字幕。若 App 提示"加载字幕出错"，可在 BoxJS 的"运行模式(排错用)"里依次切到"只翻译不回写"、"只修响应头"、"完全不处理"定位原因，也可调小"翻译时限"。
+#!desc= YouTube App 双语字幕：开启字幕后自动将每条字幕翻译并以"原文+译文"同屏显示，翻译由 AI（DeepSeek / OpenAI）或免费无需 Key 的谷歌翻译完成（三选一）。字幕请求会统一改写为 json3 格式以提高兼容性，可在 BoxJS 的"统一字幕格式(json3)"里关闭。需在 BoxJS 中订阅「YouTube AI双语字幕」，选 DeepSeek / OpenAI 时须填写对应 API Key，选谷歌翻译则无需任何配置即可使用，订阅地址：https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/YouTube/YouTubeSubtitle.boxjs.json 。服务商、API Key、Base URL、模型、目标语言、目标语言代码、双语位置、翻译缓存均可在 BoxJS 调整。需开启 MITM 并信任证书；首次开启字幕时按视频长度等待数秒至数十秒完成翻译，之后命中缓存。App 内手动选择"自动翻译"语言时不处理；使用 AI 服务商但未配置 Key、或翻译失败时保持原字幕。若 App 提示"加载字幕出错"，可在 BoxJS 的"运行模式(排错用)"里依次切到"只翻译不回写"、"只修响应头"、"完全不处理"定位原因，也可调小"翻译时限"。
 #!author= kingwhiiitee
 
 [Script]
+# 字幕轨道请求：统一改写为 json3 格式，使响应侧只处理结构化 JSON
+YouTube字幕格式 = type=http-request, pattern=^https?:\/\/(www|m)\.youtube\.com\/api\/timedtext, script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/YouTube/youtube_timedtext_fmt.js, requires-body=false, timeout=5
 # 字幕轨道响应：srv3/xml 与 json3 两种格式均支持，逐行 AI 翻译后按原格式回写双语
 YouTube双语字幕 = type=http-response, pattern=^https?:\/\/(www|m)\.youtube\.com\/api\/timedtext, script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/YouTube/youtube_subtitle.js, requires-body=true, timeout=120
 

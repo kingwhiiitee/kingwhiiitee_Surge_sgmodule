@@ -18,6 +18,7 @@
         "youtube_subtitle.cache",
         "youtube_subtitle.budget_ms",
         "youtube_subtitle.mode",
+        "youtube_subtitle.force_json3",
         "youtube_subtitle.cache.data"
       ],
       "settings": [
@@ -106,6 +107,13 @@
             { "key": "off", "label": "完全不处理" }
           ],
           "desc": "排查\"加载字幕出错\"用的分级开关：正常双语供日常使用；只翻译不回写会跑完整个翻译流程，但最终返回原始字幕，用来判断问题是否出在改写字幕内容上；只修响应头不做翻译，仅修正响应头后返回原字幕，用来判断问题是否出在响应头；完全不处理等同于停用本模块，用来确认问题是否与脚本无关。切换后需重新打开字幕才生效"
+        },
+        {
+          "id": "youtube_subtitle.force_json3",
+          "name": "统一字幕格式(json3)",
+          "val": true,
+          "type": "boolean",
+          "desc": "开启后字幕请求会统一改写为 json3 格式，这条路径结构更干净、兼容性更好，建议保持开启；关闭后按 App 原本请求的格式处理（可能是 srv3/XML）。切换后需重新打开字幕才生效"
         }
       ],
       "author": "@kingwhiiitee",

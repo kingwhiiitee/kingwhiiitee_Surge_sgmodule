@@ -263,6 +263,44 @@ ok('空译文未被写进缓存，下次重译', regot>0 && r.out.body.includes(
 r=await run({url:U,body:SRV3,store:{'youtube_subtitle.provider':'deepseek','youtube_subtitle.api_key':''},post:reply(l=>'译'+l)});
 ok('DeepSeek 无 key 仍放行原文', r.out.body===SRV3);
 
+console.log('注入健壮性');
+// 译文来自外部服务，XML 1.0 禁止的控制字符会让整份字幕变成非法 XML
+r=await run({url:U,body:'<timedtext><body><p t="0" d="9">Hi</p></body></timedtext>',
+  post:reply(l=>'\u0000\u000b译'+l+'\u001f')});
+ok('译文控制字符被剥离', r.out.body.includes('>Hi\n译Hi<'));
+ok('输出不含禁止控制字符', !/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(r.out.body));
+
+// 数字实体解码后也可能凭空产生控制字符
+r=await run({url:U,body:'<timedtext><body><p t="0" d="9">a&#11;b</p></body></timedtext>',
+  post:reply(l=>'T')});
+ok('原文侧控制字符同样被剥离', !/[\u000B]/.test(r.out.body));
+
+// 自闭合 <p/> 原来会被正则一路吃到下一个 </p>，把两条 cue 揉成一条
+const SELFCLOSE='<timedtext><body><p t="0" d="5"/><p t="10" d="9">Hi</p></body></timedtext>';
+r=await run({url:U,body:SELFCLOSE,post:reply(l=>'译'+l)});
+ok('自闭合 cue 原样保留', r.out.body.includes('<p t="0" d="5"/>'));
+ok('自闭合后的 cue 正常翻译', r.out.body.includes('>Hi\n译Hi<'));
+ok('标签配对未被破坏', (r.out.body.match(/<p\b/g)||[]).length===2 && (r.out.body.match(/<\/p>/g)||[]).length===1);
+
+// json3 的 aAppend 与 xml 的 a="1" 必须同策略
+const APPEND_JSON=JSON.stringify({events:[
+  {tStartMs:0,dDurationMs:900,segs:[{utf8:'Hi'}]},
+  {tStartMs:900,dDurationMs:100,aAppend:1,segs:[{utf8:'carry'}]}
+]});
+r=await run({url:'https://www.youtube.com/api/timedtext?v=x&lang=en&fmt=json3',body:APPEND_JSON,post:reply(l=>'译'+l)});
+const aj=JSON.parse(r.out.body).events;
+ok('json3 普通 event 仍翻译', aj[0].segs[0].utf8==='Hi\n译Hi');
+ok('json3 非空 aAppend event 不翻译', aj[1].segs[0].utf8==='carry' && aj[1].aAppend===1);
+
+// 谷歌的实际目标语言由 target_code 决定，不进缓存键会串用上一个语言的译文
+const gbase={'youtube_subtitle.provider':'google','youtube_subtitle.api_key':''};
+const gp=(pre)=>(o,cb)=>{const qs=(o.body||'').split('&').filter(Boolean).map(x=>decodeURIComponent(x.slice(2)));
+  setTimeout(()=>cb(null,{status:200},JSON.stringify(qs.map(x=>pre+x))),1);};
+r=await run({url:U+'&fmt=srv3',body:SRV3,store:Object.assign({},gbase,{'youtube_subtitle.target_code':'ja'}),post:gp('JA:')});
+ok('谷歌首个语言代码产出译文', r.out.body.includes('JA:Hello'));
+r=await run({url:U+'&fmt=srv3',body:SRV3,store:Object.assign({},r.store,{'youtube_subtitle.target_code':'ko'}),post:gp('KO:')});
+ok('换目标语言代码不命中旧缓存', r.out.body.includes('KO:Hello') && !r.out.body.includes('JA:Hello'));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
 })();

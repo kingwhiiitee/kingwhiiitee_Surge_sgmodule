@@ -98,8 +98,12 @@ const xmlDecode = (s) =>
     .replace(/&apos;|&#39;/g, "'")
     .replace(/&amp;/g, "&");
 
+// XML 1.0 只允许 \t \n \r 三个控制字符；译文来自外部翻译服务、内容不可控，
+// 数字实体解码后也可能产生控制字符，混进去会让整份字幕变成非法 XML
+const stripCtl = (s) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
+
 const xmlEscape = (s) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  stripCtl(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
 // a="1" 是自动字幕的追加/换行辅助 cue。实测样本里它们都是空的（已被
 // !text.trim() 挡掉）；带文字的 a="1" 行为未确证，保守起见原样放行——
@@ -163,7 +167,8 @@ const parseSubtitles = (format, body) => {
     for (const ev of obj.events) {
       if (!ev || !Array.isArray(ev.segs)) continue;
       const text = ev.segs.map((s) => (s && s.utf8) || "").join("");
-      if (text.trim()) items.push({ ev, text });
+      // aAppend 对应 xml 的 a="1"：追加/换行辅助 event，与 xml 分支保持同一策略
+      if (text.trim() && !ev.aAppend) items.push({ ev, text });
     }
     for (let i = 0; i < items.length; i++) {
       const nx = items[i + 1];
@@ -176,7 +181,7 @@ const parseSubtitles = (format, body) => {
         for (const it of items) {
           const t = map.get(it.text);
           if (t == null) continue; // 未翻出的 cue 保留原始结构（含 karaoke 时序）
-          it.ev.segs = [{ utf8: compose(it.text, t, "\n") }];
+          it.ev.segs = [{ utf8: stripCtl(compose(it.text, t, "\n")) }];
           // 清除 event 对滚动窗口/样式/位置的引用（顶层的 wpWinPositions、
           // wsWinStyles 是定义表，不能动），让滚动 cue 退化为静态 cue
           delete it.ev.wWinId;
@@ -198,19 +203,22 @@ const parseSubtitles = (format, body) => {
   }
 
   // xml / srv3 / ttml：逐 <p> cue 处理；空 cue 记 skip 保持与正则匹配一一对应
-  const re = /<p\b[^>]*>[\s\S]*?<\/p>/g;
+  // 自闭合 <p/> 必须单独成一个匹配：否则正则会一路吃到下一个 </p>，
+  // 把两条 cue 揉成一条，回写出标签不配对的非法 XML
+  const re = /<p\b[^>]*?\/>|<p\b[^>]*>[\s\S]*?<\/p>/g;
   const items = [];
   let m;
   while ((m = re.exec(body)) !== null) {
     const full = m[0];
+    const selfClose = full.endsWith("/>");
     const openEnd = full.indexOf(">");
-    const attrs = full.slice(2, openEnd); // 含前导空格，原样保留
-    const inner = full.slice(openEnd + 1, -4);
+    const attrs = selfClose ? full.slice(2, -2) : full.slice(2, openEnd); // 含前导空格，原样保留
+    const inner = selfClose ? "" : full.slice(openEnd + 1, -4);
     const text = xmlDecode(inner.replace(/<[^>]+>/g, ""));
     items.push({
       attrs,
       text,
-      skip: !text.trim() || isAppendCue(attrs),
+      skip: selfClose || !text.trim() || isAppendCue(attrs),
       t: attrNum(attrs, "t"),
       d: attrNum(attrs, "d"),
     });
@@ -546,7 +554,13 @@ const saveCache = (c) => {
     // 与字幕格式/双语位置无关，跨视频复用；缺行只补未翻部分。
     // 源语言必须进 key——同形异义词（英德 die）译文不同；JSON.stringify 防
     // 可配置值含 | 撞键
-    const dictKey = JSON.stringify([cfg.provider, model, lang, cfg.targetLang]);
+    const dictKey = JSON.stringify([
+      cfg.provider,
+      model,
+      lang,
+      cfg.targetLang,
+      isGoogle ? targetCode : "", // 谷歌的实际目标语言看 targetCode，不进键会串用译文
+    ]);
     const cache = cfg.cache ? loadCache() : null;
     const rawDict = cache && cache.data[dictKey];
     const dict = Object.assign(
