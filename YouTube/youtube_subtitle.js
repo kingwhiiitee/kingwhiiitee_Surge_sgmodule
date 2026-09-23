@@ -307,15 +307,24 @@ const saveCache = (c) => {
     delete c.data[c.order.shift()];
     s = JSON.stringify(c);
   }
-  // 最后一组仍超限时裁剪该字典最旧行（保部分缓存好过整组丢弃）
+  // 最后一组仍超限时裁剪该字典最旧行：按每行精确序列化字节定位最小
+  // 删除前缀，删完序列化一次；估算不足时逐条核验兜底
   if (utf8Len(s) > CACHE_MAX_BYTES && c.order.length === 1) {
-    const d = c.data[c.order[0]];
+    const d = c.data[c.order[0]] || {};
     const ks = Object.keys(d);
-    for (let i = 0; i < ks.length && utf8Len(s) > CACHE_MAX_BYTES; i++) {
-      delete d[ks[i]];
-      if (i % 128 === 127) s = JSON.stringify(c);
+    let excess = utf8Len(s) - CACHE_MAX_BYTES;
+    let i = 0;
+    while (i < ks.length && excess > 0) {
+      const k = ks[i++];
+      // "key":"value", —— 引号算入 JSON.stringify，另加冒号与逗号
+      excess -= utf8Len(JSON.stringify(k)) + utf8Len(JSON.stringify(d[k])) + 2;
+      delete d[k];
     }
     s = JSON.stringify(c);
+    while (i < ks.length && utf8Len(s) > CACHE_MAX_BYTES) {
+      delete d[ks[i++]];
+      s = JSON.stringify(c);
+    }
   }
   $persistentStore.write(s, CACHE_KEY);
 };
@@ -360,14 +369,10 @@ const saveCache = (c) => {
     const missing = unique.filter((l) => typeof dict[l] !== "string" || !dict[l]);
     log(`${v} ${lang} cues=${texts.length} unique=${unique.length} miss=${missing.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
 
-    let added = 0;
     if (missing.length) {
       const deadline = Date.now() + BUDGET_MS;
       const got = await translateAll(missing, deadline);
-      for (const [k, t] of got) {
-        dict[k] = t;
-        added++;
-      }
+      for (const [k, t] of got) dict[k] = t;
     }
 
     const map = new Map();
@@ -382,23 +387,22 @@ const saveCache = (c) => {
     const merged = parsed.rebuild(map);
 
     if (cache) {
-      // 命中也要刷新 LRU 位置；保存前重读缓存再合并，缩小并发请求
-      // 互相覆盖丢译文的窗口（只在有新增行时裁剪与回写字典）
+      // 命中也刷新 LRU；保存前重读缓存再合并本字典——缩小并发覆盖窗口，
+      // 且并发方淘汰本组后此处恢复数据，order 与 data 不产生幽灵项
       const fresh = loadCache();
       fresh.order = fresh.order.filter((k) => k !== dictKey).concat(dictKey);
-      if (added) {
-        const ks = Object.keys(dict);
-        if (ks.length > DICT_MAX) {
-          for (const k of ks.slice(0, ks.length - DICT_MAX)) delete dict[k];
-        }
-        const existing = fresh.data[dictKey];
-        // 合并进 null 原型对象：字幕行若含 "__proto__" 字面量不会触发 setter
-        fresh.data[dictKey] = Object.assign(
-          Object.create(null),
-          existing && typeof existing === "object" ? existing : null,
-          dict
-        );
+      const existing = fresh.data[dictKey];
+      // 合并进 null 原型对象：字幕行若含 "__proto__" 字面量不会触发 setter
+      const mergedDict = Object.assign(
+        Object.create(null),
+        existing && typeof existing === "object" ? existing : null,
+        dict
+      );
+      const ks = Object.keys(mergedDict);
+      if (ks.length > DICT_MAX) {
+        for (const k of ks.slice(0, ks.length - DICT_MAX)) delete mergedDict[k];
       }
+      fresh.data[dictKey] = mergedDict;
       saveCache(fresh);
     }
     return finish(merged);
