@@ -148,7 +148,9 @@ if (obj == null) {
     for (const block of blocks) {
       if (!Array.isArray(block?.note_list)) continue;
       for (const item of block.note_list) {
-        unlockSave(item, ["image_download"]);
+        const isVideo = !!(item?.video_info_v2?.media) || item?.type === "video";
+        unlockSave(item, isVideo ? ["image_download", "video_download"] : ["image_download"]);
+        if (isVideo) ensureDownloadEntry(item);
         for (const img of item.images_list || []) {
           if (!img?.live_photo_file_id) continue;
           const streamUrl = bestMediaUrl(img?.live_photo?.media);
