@@ -289,11 +289,32 @@ const loadCache = () => {
   }
 };
 
+// 字符串的 UTF-8 字节数（JS length 是 UTF-16 code unit，中文一字三元组，
+// 代理对按两个单元各计 2 字节）
+const utf8Len = (s) => {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0xd800 || c > 0xdfff ? 3 : 2;
+  }
+  return n;
+};
+
 const saveCache = (c) => {
   while (c.order.length > CACHE_MAX) delete c.data[c.order.shift()];
   let s = JSON.stringify(c);
-  while (s.length > CACHE_MAX_BYTES && c.order.length > 1) {
+  while (utf8Len(s) > CACHE_MAX_BYTES && c.order.length > 1) {
     delete c.data[c.order.shift()];
+    s = JSON.stringify(c);
+  }
+  // 最后一组仍超限时裁剪该字典最旧行（保部分缓存好过整组丢弃）
+  if (utf8Len(s) > CACHE_MAX_BYTES && c.order.length === 1) {
+    const d = c.data[c.order[0]];
+    const ks = Object.keys(d);
+    for (let i = 0; i < ks.length && utf8Len(s) > CACHE_MAX_BYTES; i++) {
+      delete d[ks[i]];
+      if (i % 128 === 127) s = JSON.stringify(c);
+    }
     s = JSON.stringify(c);
   }
   $persistentStore.write(s, CACHE_KEY);
@@ -361,16 +382,24 @@ const saveCache = (c) => {
     const merged = parsed.rebuild(map);
 
     if (cache) {
-      // 命中也要刷新 LRU 位置；有新增行时才做字典裁剪与回写
-      cache.order = cache.order.filter((k) => k !== dictKey).concat(dictKey);
+      // 命中也要刷新 LRU 位置；保存前重读缓存再合并，缩小并发请求
+      // 互相覆盖丢译文的窗口（只在有新增行时裁剪与回写字典）
+      const fresh = loadCache();
+      fresh.order = fresh.order.filter((k) => k !== dictKey).concat(dictKey);
       if (added) {
         const ks = Object.keys(dict);
         if (ks.length > DICT_MAX) {
           for (const k of ks.slice(0, ks.length - DICT_MAX)) delete dict[k];
         }
-        cache.data[dictKey] = dict;
+        const existing = fresh.data[dictKey];
+        // 合并进 null 原型对象：字幕行若含 "__proto__" 字面量不会触发 setter
+        fresh.data[dictKey] = Object.assign(
+          Object.create(null),
+          existing && typeof existing === "object" ? existing : null,
+          dict
+        );
       }
-      saveCache(cache);
+      saveCache(fresh);
     }
     return finish(merged);
   } catch (e) {
