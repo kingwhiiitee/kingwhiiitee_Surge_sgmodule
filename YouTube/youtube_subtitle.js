@@ -5,6 +5,8 @@
  * - srv3(ttml/xml)：每个 <p> cue 内以字面换行追加译文行（与官方多行 cue 的
  *   字节形态一致；对 XML 解析器而言与 &#x000A; 实体等价）
  *   json3：每个 event 的 segs 合并为一段 utf8，以 \n 追加译文行
+ * - 自动字幕（kind=asr）：跳过 a="1" 追加 cue，清除滚动窗口属性，并把重叠
+ *   的 cue 时长收到下一条起点，让滚动字幕退化为不堆叠的静态双语 cue
  * - 参数全部在 BoxJS《YouTube AI双语字幕》中调整：
  *   服务商 / API Key / Base URL / 模型 / 目标语言 / 双语位置 / 翻译缓存
  * - App 内手动选择"自动翻译"语言的请求（URL 带 tlang）原样放行；
@@ -74,6 +76,33 @@ const xmlDecode = (s) =>
 const xmlEscape = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
+// a="1" 是自动字幕的追加/换行辅助 cue。实测样本里它们都是空的（已被
+// !text.trim() 挡掉）；带文字的 a="1" 行为未确证，保守起见原样放行——
+// 宁可这行没有译文，也不要把译文接在半句话中间
+const isAppendCue = (attrs) => /\ba="1"/.test(attrs);
+
+// XML 侧对应 JSON 的 delete ev.wWinId：去掉滚动窗口引用（w）、追加标记（a）
+// 与指向滚动样式/位置的 ws/wp，让 cue 退化为静态显示；t/d 等时序属性保留
+const staticAttrs = (attrs) =>
+  attrs
+    .replace(/\s+ws="[^"]*"/g, "")
+    .replace(/\s+wp="[^"]*"/g, "")
+    .replace(/\s+w="[^"]*"/g, "")
+    .replace(/\s+a="[^"]*"/g, "");
+
+const attrNum = (attrs, name) => {
+  const m = attrs.match(new RegExp(`\\b${name}="(-?\\d+)"`));
+  return m ? parseInt(m[1], 10) : null;
+};
+
+// 自动字幕靠滚动窗口同屏显示多行，相邻 cue 的时间区间大幅重叠。去掉窗口属性
+// 后它们变成静态 cue，重叠就会堆在屏幕上，所以把时长收到下一条有文字的 cue
+// 起点。只缩不放：普通字幕本就不重叠，这里是空操作
+const clampDur = (attrs, t, d, nextT) => {
+  if (t == null || d == null || nextT == null || t + d <= nextT) return attrs;
+  return attrs.replace(/\bd="[^"]*"/, `d="${Math.max(1, nextT - t)}"`);
+};
+
 // 按 position 拼接原文与译文；无译文时回退原文
 const compose = (orig, trans, br) => {
   if (!trans) return orig;
@@ -95,6 +124,10 @@ const parseSubtitles = (format, body) => {
       const text = ev.segs.map((s) => (s && s.utf8) || "").join("");
       if (text.trim()) items.push({ ev, text });
     }
+    for (let i = 0; i < items.length; i++) {
+      const nx = items[i + 1];
+      items[i].nextT = nx && typeof nx.ev.tStartMs === "number" ? nx.ev.tStartMs : null;
+    }
     return {
       format,
       items,
@@ -103,7 +136,20 @@ const parseSubtitles = (format, body) => {
           const t = map.get(it.text);
           if (t == null) continue; // 未翻出的 cue 保留原始结构（含 karaoke 时序）
           it.ev.segs = [{ utf8: compose(it.text, t, "\n") }];
+          // 清除 event 对滚动窗口/样式/位置的引用（顶层的 wpWinPositions、
+          // wsWinStyles 是定义表，不能动），让滚动 cue 退化为静态 cue
           delete it.ev.wWinId;
+          delete it.ev.wpWinPosId;
+          delete it.ev.wsWinStyleId;
+          const nt = it.nextT;
+          if (
+            typeof it.ev.tStartMs === "number" &&
+            typeof it.ev.dDurationMs === "number" &&
+            typeof nt === "number" &&
+            it.ev.tStartMs + it.ev.dDurationMs > nt
+          ) {
+            it.ev.dDurationMs = Math.max(1, nt - it.ev.tStartMs);
+          }
         }
         return JSON.stringify(obj);
       },
@@ -120,9 +166,19 @@ const parseSubtitles = (format, body) => {
     const attrs = full.slice(2, openEnd); // 含前导空格，原样保留
     const inner = full.slice(openEnd + 1, -4);
     const text = xmlDecode(inner.replace(/<[^>]+>/g, ""));
-    items.push({ attrs, text, skip: !text.trim() });
+    items.push({
+      attrs,
+      text,
+      skip: !text.trim() || isAppendCue(attrs),
+      t: attrNum(attrs, "t"),
+      d: attrNum(attrs, "d"),
+    });
   }
   if (!items.some((i) => !i.skip)) return null;
+  for (let i = items.length - 1, nextT = null; i >= 0; i--) {
+    items[i].nextT = nextT;
+    if (!items[i].skip) nextT = items[i].t;
+  }
   return {
     format,
     items,
@@ -147,7 +203,13 @@ const parseSubtitles = (format, body) => {
               : cfg.position === "above"
                 ? `${xmlEscape(t)}\n${orig}`
                 : `${orig}\n${xmlEscape(t)}`;
-          out += `<p${it.attrs}>${inner}</p>`;
+          const attrsOut = clampDur(
+            staticAttrs(it.attrs),
+            it.t,
+            it.d,
+            it.nextT
+          );
+          out += `<p${attrsOut}>${inner}</p>`;
         }
         last = m.index + m[0].length;
       }
@@ -381,6 +443,7 @@ const saveCache = (c) => {
 
     const v = getParam(url, "v") || "";
     const lang = getParam(url, "lang") || "";
+    const kind = getParam(url, "kind") || "";
     const texts = parsed.items.filter((i) => i.text.trim()).map((i) => i.text);
 
     // 译文字典：按 服务商|模型|源语言|目标语言 分组的行级 原文→译文 表，
@@ -398,7 +461,7 @@ const saveCache = (c) => {
     const unique = [...new Set(texts)];
     // 空串译文视为未完成，下次重试
     const missing = unique.filter((l) => typeof dict[l] !== "string" || !dict[l]);
-    log(`${v} ${lang} cues=${texts.length} unique=${unique.length} miss=${missing.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
+    log(`${v} ${lang} kind=${kind || "manual"} cues=${texts.length} unique=${unique.length} miss=${missing.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
 
     if (missing.length) {
       const deadline = Date.now() + BUDGET_MS;
