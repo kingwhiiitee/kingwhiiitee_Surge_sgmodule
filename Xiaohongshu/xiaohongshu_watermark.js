@@ -48,14 +48,24 @@ const saveLivePhotoUrls = (entries) => {
     const parsed = JSON.parse(readStore(LP_INDEX_KEY));
     if (Array.isArray(parsed)) index = parsed;
   } catch (e) {}
+  const entryId = (e) => (typeof e === "string" ? e : e?.id) || null;
   const freshIds = new Set(fresh.map((e) => e.id));
-  index = index.filter((e) => e && !freshIds.has(e.id)).concat(fresh);
+  index = index.filter((e) => entryId(e) && !freshIds.has(entryId(e))).concat(fresh);
   const evicted = index.splice(0, Math.max(0, index.length - LP_MAX));
   for (const e of evicted) {
+    const id = entryId(e);
+    if (!id) continue;
+    const raw = readStore(LP_PREFIX + id);
+    if (raw == null) continue;
+    // 值与索引条目携带 generation 时，仅当一致才删除；旧版裸字符串值视为 "legacy"
+    const wantGen = (typeof e === "object" && e ? e.g : undefined) ?? "legacy";
     try {
-      const cur = JSON.parse(readStore(LP_PREFIX + e.id));
-      if (cur && cur.g === e.g) writeStore(LP_PREFIX + e.id, null);
-    } catch (err) {}
+      const cur = JSON.parse(raw);
+      const storedGen = cur && typeof cur === "object" ? cur.g : "legacy";
+      if (storedGen === wantGen) writeStore(LP_PREFIX + id, null);
+    } catch (err) {
+      if (wantGen === "legacy") writeStore(LP_PREFIX + id, null);
+    }
   }
   writeStore(LP_INDEX_KEY, JSON.stringify(index));
 };
@@ -150,12 +160,11 @@ if (obj == null) {
     const fixComment = (c) => {
       if (c?.comment_type === 3) c.comment_type = 2;
       if (c?.media_source_type === 1) c.media_source_type = 0;
+      for (const sc of c?.sub_comments || []) fixComment(sc);
     };
     stripRedId(obj);
-    const comments = [...(obj?.data?.comments || []), ...(obj?.data?.sub_comments || [])];
-    for (const c of comments) {
+    for (const c of [...(obj?.data?.comments || []), ...(obj?.data?.sub_comments || [])]) {
       fixComment(c);
-      for (const sc of c?.sub_comments || []) fixComment(sc);
     }
   }
 
