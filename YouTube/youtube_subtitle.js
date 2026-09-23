@@ -8,6 +8,8 @@
  *   服务商 / API Key / Base URL / 模型 / 目标语言 / 双语位置 / 翻译缓存
  * - App 内手动选择"自动翻译"语言的请求（URL 带 tlang）原样放行；
  *   未配置 API Key、格式不识别或翻译失败时同样原样返回，不影响原始字幕
+ * - 缓存按行存"译文字典"（key=服务商|模型|目标语言），与字幕格式/双语位置
+ *   无关，跨视频复用；未翻出的行下次请求自动续翻，逐步收敛到完整双语
  */
 
 const PROVIDERS = {
@@ -18,8 +20,10 @@ const PROVIDERS = {
 const CHUNK_LINES = 45; // 每次请求翻译的行数
 const CONCURRENCY = 3; // 并发翻译请求数
 const API_TIMEOUT = 45; // 单次 LLM 请求超时（秒）
+const BUDGET_MS = 105 * 1000; // 全局翻译时限（模块 timeout=120，预留回写余量）
 const CACHE_KEY = "youtube_subtitle.cache.data";
-const CACHE_MAX = 6; // 缓存的视频字幕条数（LRU）
+const CACHE_MAX = 6; // 缓存的 服务商|模型|目标语言 组合数（LRU）
+const DICT_MAX = 3000; // 每组译文字典的最大行数
 const CACHE_MAX_BYTES = 400 * 1024; // 持久化体积上限
 
 const readKey = (n, dft) => {
@@ -42,6 +46,7 @@ const endpoint = `${(cfg.baseUrl || provider.base).replace(/\/+$/, "")}/chat/com
 const model = cfg.model || provider.model;
 
 const log = (m) => console.log(`[yt-sub] ${m}`);
+if (/^http:\/\//.test(endpoint)) log("WARN: http:// 端点，API Key 将明文传输");
 
 const getParam = (url, name) => {
   const m = url.match(new RegExp(`[?&]${name}=([^&]*)`));
@@ -89,7 +94,9 @@ const parseSubtitles = (format, body) => {
       items,
       rebuild(map) {
         for (const it of items) {
-          it.ev.segs = [{ utf8: compose(it.text, map.get(it.text), "\n") }];
+          const t = map.get(it.text);
+          if (t == null) continue; // 未翻出的 cue 保留原始结构（含 karaoke 时序）
+          it.ev.segs = [{ utf8: compose(it.text, t, "\n") }];
           delete it.ev.wWinId;
         }
         return JSON.stringify(obj);
@@ -121,15 +128,14 @@ const parseSubtitles = (format, body) => {
       while ((m = re.exec(body)) !== null) {
         out += body.slice(last, m.index);
         const it = items[k++];
-        if (it.skip) {
-          out += m[0];
+        const t = it.skip ? undefined : map.get(it.text);
+        if (t == null) {
+          out += m[0]; // 空 cue 与未翻出的 cue 原样输出，保留 <s> 结构
         } else {
-          const t = map.get(it.text);
           const orig = xmlEscape(it.text);
           // 分行实体 &#x000A; 不能过 xmlEscape，先各自转义再拼接
-          const inner = !t
-            ? orig
-            : cfg.position === "only"
+          const inner =
+            cfg.position === "only"
               ? xmlEscape(t)
               : cfg.position === "above"
                 ? `${xmlEscape(t)}${breakLine.xml}${orig}`
@@ -154,12 +160,12 @@ const detectFormat = (url, body) => {
   return null;
 };
 
-const httpPost = (payload) =>
+const httpPost = (payload, timeout) =>
   new Promise((resolve) => {
     $httpClient.post(
       {
         url: endpoint,
-        timeout: API_TIMEOUT,
+        timeout,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${cfg.apiKey}`,
@@ -202,7 +208,7 @@ const extractTranslations = (content, expected) => {
   return null;
 };
 
-const translateChunk = async (lines) => {
+const translateChunk = async (lines, deadline) => {
   const payload = {
     model,
     temperature: 0.2,
@@ -219,8 +225,14 @@ const translateChunk = async (lines) => {
     ],
   };
   for (let attempt = 0; attempt < 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining < 5000) {
+      log(`deadline near, skip ${lines.length} lines`);
+      return null;
+    }
     try {
-      const { err, status, data } = await httpPost(payload);
+      const timeout = Math.min(API_TIMEOUT, Math.floor(remaining / 1000) - 2);
+      const { err, status, data } = await httpPost(payload, timeout);
       if (err || !status || status < 200 || status >= 300) {
         log(`llm ${status || err} retry=${attempt}`);
         continue;
@@ -237,8 +249,9 @@ const translateChunk = async (lines) => {
   return null;
 };
 
-// 分批并发翻译；返回 Map(原文→译文)，失败的行不放入 map（回退原文）
-const translateAll = async (uniqueLines) => {
+// 分批并发翻译；返回 Map(原文→译文)，失败的行不放入 map（回退原文）。
+// deadline 之后不再取新批次/重试，已完成的行照常可用
+const translateAll = async (uniqueLines, deadline) => {
   const chunks = [];
   for (let i = 0; i < uniqueLines.length; i += CHUNK_LINES) {
     chunks.push(uniqueLines.slice(i, i + CHUNK_LINES));
@@ -248,9 +261,9 @@ const translateAll = async (uniqueLines) => {
   const workers = Array.from(
     { length: Math.min(CONCURRENCY, chunks.length) },
     async () => {
-      while (cursor < chunks.length) {
+      while (cursor < chunks.length && Date.now() < deadline - 3000) {
         const i = cursor++;
-        results[i] = await translateChunk(chunks[i]);
+        results[i] = await translateChunk(chunks[i], deadline);
       }
     }
   );
@@ -305,31 +318,46 @@ const saveCache = (c) => {
     const lang = getParam(url, "lang") || "";
     const kind = getParam(url, "kind") || "";
     const texts = parsed.items.filter((i) => i.text.trim()).map((i) => i.text);
-    const sig = [
-      v, lang, kind, cfg.provider, model, cfg.targetLang, cfg.position,
-      texts.length, texts[0] || "", texts[texts.length - 1] || "",
-    ].join("|");
 
+    // 译文字典：按 服务商|模型|目标语言 分组的行级 原文→译文 表，
+    // 与字幕格式/双语位置无关，跨视频复用；缺行只补未翻部分
+    const dictKey = `${cfg.provider}|${model}|${cfg.targetLang}`;
     const cache = cfg.cache ? loadCache() : null;
-    if (cache && cache.data[sig]) {
-      cache.order = cache.order.filter((k) => k !== sig).concat(sig);
-      saveCache(cache);
-      log(`cache hit ${v} ${lang}`);
-      return finish(cache.data[sig]);
-    }
+    const dict = Object.assign(Object.create(null), cache && cache.data[dictKey]);
 
     const unique = [...new Set(texts)];
-    log(`${v} ${lang} cues=${texts.length} unique=${unique.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
-    const map = await translateAll(unique);
+    const missing = unique.filter((l) => typeof dict[l] !== "string");
+    log(`${v} ${lang} cues=${texts.length} unique=${unique.length} miss=${missing.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
+
+    let added = 0;
+    if (missing.length) {
+      const deadline = Date.now() + BUDGET_MS;
+      const got = await translateAll(missing, deadline);
+      for (const [k, t] of got) {
+        dict[k] = t;
+        added++;
+      }
+    }
+
+    const map = new Map();
+    for (const l of unique) {
+      const t = dict[l];
+      if (typeof t === "string" && t) map.set(l, t);
+    }
     if (!map.size) {
-      log("all translations failed, keep original");
+      log("no translations available, keep original");
       return finish(body);
     }
     const merged = parsed.rebuild(map);
 
-    if (cache && map.size) {
-      cache.order.push(sig);
-      cache.data[sig] = merged;
+    if (cache && added) {
+      // 字典超限时淘汰最旧行；组合级 LRU 与体积上限在 saveCache 处理
+      const ks = Object.keys(dict);
+      if (ks.length > DICT_MAX) {
+        for (const k of ks.slice(0, ks.length - DICT_MAX)) delete dict[k];
+      }
+      cache.order = cache.order.filter((k) => k !== dictKey).concat(dictKey);
+      cache.data[dictKey] = dict;
       saveCache(cache);
     }
     return finish(merged);

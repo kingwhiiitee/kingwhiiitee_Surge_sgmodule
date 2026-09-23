@@ -41,7 +41,7 @@
           "name": "Base URL（可选）",
           "val": "",
           "type": "text",
-          "desc": "留空使用默认：DeepSeek = https://api.deepseek.com，OpenAI = https://api.openai.com/v1。自建/中转 OpenAI 兼容接口可在此填写（脚本会拼接 /chat/completions）"
+          "desc": "留空使用默认：DeepSeek = https://api.deepseek.com，OpenAI = https://api.openai.com/v1。自建/中转 OpenAI 兼容接口可在此填写（脚本会拼接 /chat/completions）。建议 https://，http:// 会明文传输 API Key"
         },
         {
           "id": "youtube_subtitle.model",
@@ -74,7 +74,7 @@
           "name": "翻译缓存",
           "val": true,
           "type": "boolean",
-          "desc": "同一视频复用翻译结果（最多缓存 6 个视频），重复观看不再消耗 API"
+          "desc": "按行缓存译文（服务商|模型|目标语言 分组，跨视频复用）。已翻行永不重翻，失败行下次请求自动续翻"
         }
       ],
       "author": "@kingwhiiitee",
