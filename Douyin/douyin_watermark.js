@@ -35,6 +35,7 @@ const deepFix = (node, depth) => {
 // 视频对象：先去水印化全部流地址，再让下载入口复用播放流
 const unlockVideoFields = (video) => {
   if (!video || typeof video !== "object") return;
+  video.prevent_download = false;
   deepFix(video, 0);
   if (Array.isArray(video.play_addr?.url_list) && video.play_addr.url_list.length) {
     video.download_addr = video.play_addr;
