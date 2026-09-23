@@ -1,0 +1,86 @@
+{
+  "id": "kingwhiiitee.surge.sub",
+  "name": "kingwhiiitee Surge 模块",
+  "author": "@kingwhiiitee",
+  "repo": "https://github.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule",
+  "apps": [
+    {
+      "id": "YouTubeAISubtitle",
+      "name": "YouTube AI双语字幕",
+      "keys": [
+        "youtube_subtitle.provider",
+        "youtube_subtitle.api_key",
+        "youtube_subtitle.base_url",
+        "youtube_subtitle.model",
+        "youtube_subtitle.target_lang",
+        "youtube_subtitle.position",
+        "youtube_subtitle.cache",
+        "youtube_subtitle.cache.data"
+      ],
+      "settings": [
+        {
+          "id": "youtube_subtitle.provider",
+          "name": "翻译服务商",
+          "val": "deepseek",
+          "type": "radios",
+          "items": [
+            { "key": "deepseek", "label": "DeepSeek" },
+            { "key": "openai", "label": "OpenAI" }
+          ],
+          "desc": "选择 AI 翻译服务，需填写对应的 API Key"
+        },
+        {
+          "id": "youtube_subtitle.api_key",
+          "name": "API Key",
+          "val": "",
+          "type": "text",
+          "desc": "DeepSeek 在 platform.deepseek.com 创建；OpenAI 在 platform.openai.com 创建。未填写时字幕保持原文"
+        },
+        {
+          "id": "youtube_subtitle.base_url",
+          "name": "Base URL（可选）",
+          "val": "",
+          "type": "text",
+          "desc": "留空使用默认：DeepSeek = https://api.deepseek.com，OpenAI = https://api.openai.com/v1。自建/中转 OpenAI 兼容接口可在此填写（脚本会拼接 /chat/completions）。建议 https://，http:// 会明文传输 API Key"
+        },
+        {
+          "id": "youtube_subtitle.model",
+          "name": "模型（可选）",
+          "val": "",
+          "type": "text",
+          "desc": "留空使用默认：deepseek-chat / gpt-4o-mini"
+        },
+        {
+          "id": "youtube_subtitle.target_lang",
+          "name": "目标语言",
+          "val": "简体中文",
+          "type": "text",
+          "desc": "译文语言，可填任意语言（如 繁體中文、English、日本語、한국어）"
+        },
+        {
+          "id": "youtube_subtitle.position",
+          "name": "双语位置",
+          "val": "below",
+          "type": "radios",
+          "items": [
+            { "key": "below", "label": "原文在上，译文在下" },
+            { "key": "above", "label": "译文在上，原文在下" },
+            { "key": "only", "label": "仅显示译文" }
+          ],
+          "desc": "字幕行内显示顺序"
+        },
+        {
+          "id": "youtube_subtitle.cache",
+          "name": "翻译缓存",
+          "val": true,
+          "type": "boolean",
+          "desc": "按行缓存译文（服务商|模型|原文语言|目标语言 分组，跨视频复用）。已翻行永不重翻，失败行下次请求自动续翻"
+        }
+      ],
+      "author": "@kingwhiiitee",
+      "repo": "https://github.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule",
+      "script": "https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/YouTube/youtube_subtitle.js",
+      "desc": "配合 Surge 模块「YouTube AI双语字幕」使用；修改设置后重新开关一次字幕即生效"
+    }
+  ]
+}
