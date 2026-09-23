@@ -26,20 +26,49 @@ const writeStore = (key, value) =>
       ? $prefs.setValueForKey(value, key)
       : false;
 
+const newGen = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
 // entries: [[live_photo_file_id, streamUrl], ...]
+// 值与索引条目携带 generation，删除被淘汰键前回读校验 generation 一致，
+// 避免并发响应把刚刷新的 URL 删掉；索引竞态最多留孤儿键，不会丢数据。
 const saveLivePhotoUrls = (entries) => {
-  const ids = entries.map(([fileId]) => fileId);
-  for (const [fileId, streamUrl] of entries) writeStore(LP_PREFIX + fileId, streamUrl);
+  const fresh = [];
+  const seen = new Set();
+  for (const [fileId, streamUrl] of entries) {
+    if (seen.has(fileId)) continue;
+    seen.add(fileId);
+    const g = newGen();
+    writeStore(LP_PREFIX + fileId, JSON.stringify({ g, url: streamUrl }));
+    fresh.push({ id: fileId, g });
+  }
+  if (!fresh.length) return;
 
   let index = [];
   try {
     const parsed = JSON.parse(readStore(LP_INDEX_KEY));
     if (Array.isArray(parsed)) index = parsed;
   } catch (e) {}
-  index = index.filter((id) => !ids.includes(id)).concat(ids);
+  const freshIds = new Set(fresh.map((e) => e.id));
+  index = index.filter((e) => e && !freshIds.has(e.id)).concat(fresh);
   const evicted = index.splice(0, Math.max(0, index.length - LP_MAX));
-  for (const id of evicted) writeStore(LP_PREFIX + id, null);
+  for (const e of evicted) {
+    try {
+      const cur = JSON.parse(readStore(LP_PREFIX + e.id));
+      if (cur && cur.g === e.g) writeStore(LP_PREFIX + e.id, null);
+    } catch (err) {}
+  }
   writeStore(LP_INDEX_KEY, JSON.stringify(index));
+};
+
+const getLivePhotoUrl = (fileId) => {
+  const raw = readStore(LP_PREFIX + fileId);
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v.url === "string" && v.url ? v.url : null;
+  } catch (e) {
+    return typeof raw === "string" ? raw : null;
+  }
 };
 
 // 分辨率优先，其次平均码率
@@ -103,7 +132,7 @@ if (obj == null) {
   // 实况照片保存：仅按 file_id 命中当前响应的条目才重写，其余原样放行
   if (url.includes("/note/live_photo/save") && Array.isArray(obj?.data?.datas)) {
     obj.data.datas = obj.data.datas.map((d) => {
-      const streamUrl = d?.file_id ? readStore(LP_PREFIX + d.file_id) : null;
+      const streamUrl = d?.file_id ? getLivePhotoUrl(d.file_id) : null;
       return streamUrl ? { ...d, url: streamUrl } : d;
     });
   }
