@@ -1,6 +1,7 @@
 /*
  * 抖音视频/图集/评论区去水印（Surge http-response 脚本）
- * - 视频：解除下载限制，download_addr/download_suffix_logo_addr 换为播放流，
+ * - 视频：解除下载限制（含"此类型视频暂不支持下载"的类型级限制），
+ *   download_addr/download_suffix_logo_addr 换为播放流，
  *   并把对象内所有 /playwm/ 水印流地址改写为 /play/ 无水印地址
  * - 图集：images[].download_url_list 换为原图 url_list；image_post_info 的
  *   owner/user_watermark_image 换为无水印变体
@@ -43,29 +44,57 @@ const unlockVideoFields = (video) => {
   if ("has_watermark" in video) video.has_watermark = false;
 };
 
+// ACLCommonShare 归一化为"允许"：code=0/show_type=2/transcode=3 放行下载，
+// mute=false 保留音轨；extra 与 toast_msg 是限制原因与提示文案的载体，一并移除
+const fixAclShare = (p) => {
+  if (!p || typeof p !== "object") return;
+  p.code = 0;
+  p.show_type = 2;
+  p.transcode = 3;
+  p.mute = false;
+  delete p.extra;
+  delete p.toast_msg;
+};
+
 // aweme 条目：解除保存限制，处理视频、图集与图集 v2 的水印字段
 const unlockAweme = (a) => {
   if (!a || typeof a !== "object") return;
   a.prevent_download = false;
-  if (a.status) a.status.reviewed = 1;
-  if (a.video_control) {
-    a.video_control.allow_download = true;
-    a.video_control.prevent_download_type = 0;
+  if (a.status && typeof a.status === "object") {
+    a.status.reviewed = 1;
+    a.status.allow_share = true;
+    a.status.is_prohibited = false;
+  }
+  const vc = a.video_control;
+  if (vc && typeof vc === "object") {
+    vc.allow_download = true;
+    vc.prevent_download_type = 0;
+    vc.download_ignore_visibility = true;
+    // download_info 是"作者已关闭下载/此类型视频暂不支持下载"提示的直接来源：
+    // fail_info.msg 即 toast 文案；可下载状态下只有 level:0
+    const di = vc.download_info;
+    if (di && typeof di === "object") {
+      di.level = 0;
+      delete di.fail_info;
+    }
   }
   unlockVideoFields(a.video);
 
+  // aweme_acl 的三个下载面板任一带 code!=0 都会拦截保存入口，逐一归一化；
+  // download_general 存在时用同一对象覆盖其余面板（已验证的解锁配方）
   const acl = a.aweme_acl;
-  const dg = acl && acl.download_general;
-  if (dg && typeof dg === "object") {
-    dg.mute = false;
-    if (dg.extra) {
-      delete dg.extra;
-      dg.code = 0;
-      dg.show_type = 2;
-      dg.transcode = 3;
+  if (acl && typeof acl === "object") {
+    fixAclShare(acl.download_general);
+    const dg = acl.download_general;
+    if (dg && typeof dg === "object") {
       acl.download_mask_panel = dg;
+      acl.download_share_panel = dg;
       acl.share_general = dg;
+    } else {
+      fixAclShare(acl.download_mask_panel);
+      fixAclShare(acl.download_share_panel);
     }
+    fixAclShare(acl.share_general);
   }
 
   for (const img of a.images || []) {
@@ -126,7 +155,7 @@ if (body) {
 
 if (obj == null) {
   // 非 JSON（如 protobuf 信息流）原样放行
-  $done(body ? { body } : {});
+  $done({});
 } else {
   // 信息流：feed/post/detail/favorite/related/搜索等返回的 aweme 条目
   for (const key of ["aweme_list", "aweme_details"]) {
@@ -142,11 +171,14 @@ if (obj == null) {
     if (!b || typeof b !== "object") continue;
     if (b.aweme) unlockAweme(b.aweme);
     if (b.aweme_info) unlockAweme(b.aweme_info);
+    if (b.aweme_detail) unlockAweme(b.aweme_detail);
+    for (const a of b.aweme_list || []) unlockAweme(a);
     if (!b.aweme && !b.aweme_info && (b.video || b.images || b.image_post_info)) {
       unlockAweme(b);
     }
     for (const it of b.items || []) {
       if (it?.aweme) unlockAweme(it.aweme);
+      if (it?.aweme_info) unlockAweme(it.aweme_info);
     }
   }
 
