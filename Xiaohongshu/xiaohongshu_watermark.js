@@ -6,9 +6,11 @@
  * 配合 [Map Local] 将水印配置图替换为 1px 透明图，客户端无法叠加水印。
  */
 
-// live_photo_file_id -> 无水印流地址，跨笔记合并，超出上限时淘汰最旧条目
-const LIVE_PHOTO_CACHE_KEY = "kingwhiiitee.xhs.live_photo_map";
-const LIVE_PHOTO_CACHE_MAX = 300;
+// 实况照片流地址按 live_photo_file_id 一键一值存储，不同 feed 响应写入互不覆盖；
+// 索引键记录写入顺序用于淘汰最旧条目，索引更新竞态最多留下孤儿键，不会丢数据。
+const LP_PREFIX = "kingwhiiitee.xhs.lp.";
+const LP_INDEX_KEY = "kingwhiiitee.xhs.lp.idx";
+const LP_MAX = 300;
 
 const readStore = (key) =>
   typeof $persistentStore !== "undefined"
@@ -24,23 +26,20 @@ const writeStore = (key, value) =>
       ? $prefs.setValueForKey(value, key)
       : false;
 
-const loadLivePhotoMap = () => {
-  try {
-    const map = JSON.parse(readStore(LIVE_PHOTO_CACHE_KEY));
-    return map && typeof map === "object" && !Array.isArray(map) ? map : {};
-  } catch (e) {
-    return {};
-  }
-};
+// entries: [[live_photo_file_id, streamUrl], ...]
+const saveLivePhotoUrls = (entries) => {
+  const ids = entries.map(([fileId]) => fileId);
+  for (const [fileId, streamUrl] of entries) writeStore(LP_PREFIX + fileId, streamUrl);
 
-const mergeLivePhotoMap = (entries) => {
-  const map = loadLivePhotoMap();
-  for (const [fileId, streamUrl] of entries) map[fileId] = streamUrl;
-  const keys = Object.keys(map);
-  if (keys.length > LIVE_PHOTO_CACHE_MAX) {
-    for (const k of keys.slice(0, keys.length - LIVE_PHOTO_CACHE_MAX)) delete map[k];
-  }
-  writeStore(LIVE_PHOTO_CACHE_KEY, JSON.stringify(map));
+  let index = [];
+  try {
+    const parsed = JSON.parse(readStore(LP_INDEX_KEY));
+    if (Array.isArray(parsed)) index = parsed;
+  } catch (e) {}
+  index = index.filter((id) => !ids.includes(id)).concat(ids);
+  const evicted = index.splice(0, Math.max(0, index.length - LP_MAX));
+  for (const id of evicted) writeStore(LP_PREFIX + id, null);
+  writeStore(LP_INDEX_KEY, JSON.stringify(index));
 };
 
 // 分辨率优先，其次平均码率
@@ -90,23 +89,23 @@ if (obj == null) {
           }
         }
         for (const img of item.images_list || []) {
-          const media = img?.live_photo?.media;
-          if (!img?.live_photo_file_id || !media?.video_id) continue;
+          if (!img?.live_photo_file_id) continue;
           const streamUrl =
-            pickStreamUrl(media?.stream?.h265) || pickStreamUrl(media?.stream?.h264);
+            pickStreamUrl(img?.live_photo?.media?.stream?.h265) ||
+            pickStreamUrl(img?.live_photo?.media?.stream?.h264);
           if (streamUrl) pending.push([img.live_photo_file_id, streamUrl]);
         }
       }
     }
-    if (pending.length) mergeLivePhotoMap(pending);
+    if (pending.length) saveLivePhotoUrls(pending);
   }
 
   // 实况照片保存：仅按 file_id 命中当前响应的条目才重写，其余原样放行
   if (url.includes("/note/live_photo/save") && Array.isArray(obj?.data?.datas)) {
-    const map = loadLivePhotoMap();
-    obj.data.datas = obj.data.datas.map((d) =>
-      map[d?.file_id] ? { ...d, url: map[d.file_id] } : d
-    );
+    obj.data.datas = obj.data.datas.map((d) => {
+      const streamUrl = d?.file_id ? readStore(LP_PREFIX + d.file_id) : null;
+      return streamUrl ? { ...d, url: streamUrl } : d;
+    });
   }
 
   // 评论区：贴纸类评论转图片类型可保存，递归剥离水印里的 red_id
