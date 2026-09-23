@@ -2,7 +2,8 @@
  * YouTube App 双语字幕（Surge http-response 脚本）
  * - 拦截 www/m.youtube.com/api/timedtext 的字幕响应，逐行调用 OpenAI 兼容
  *   接口（DeepSeek / OpenAI 二选一）翻译，按原格式回写成双语字幕
- * - srv3(ttml/xml)：每个 <p> cue 内以 &#x000A; 追加译文行
+ * - srv3(ttml/xml)：每个 <p> cue 内以字面换行追加译文行——与 YouTube 官方
+ *   下发的多行 cue 形态逐字节一致（<p> 内裸文本，不用 &#x000A; 实体）
  *   json3：每个 event 的 segs 合并为一段 utf8，以 \n 追加译文行
  * - 参数全部在 BoxJS《YouTube AI双语字幕》中调整：
  *   服务商 / API Key / Base URL / 模型 / 目标语言 / 双语位置 / 翻译缓存
@@ -19,8 +20,8 @@ const PROVIDERS = {
 
 const CHUNK_LINES = 45; // 每次请求翻译的行数
 const CONCURRENCY = 3; // 并发翻译请求数
-const API_TIMEOUT = 45; // 单次 LLM 请求超时（秒）
-const BUDGET_MS = 105 * 1000; // 全局翻译时限（模块 timeout=120，预留回写余量）
+const API_TIMEOUT = 30; // 单次 LLM 请求超时（秒）
+const BUDGET_MS = 90 * 1000; // 全局翻译时限（模块 timeout=120，预留回写余量）
 const CACHE_KEY = "youtube_subtitle.cache.data";
 const CACHE_MAX = 6; // 缓存的 服务商|模型|目标语言 组合数（LRU）
 const DICT_MAX = 3000; // 每组译文字典的最大行数
@@ -69,8 +70,6 @@ const xmlDecode = (s) =>
 
 const xmlEscape = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-const breakLine = { xml: "&#x000A;", json: "\n" };
 
 // 按 position 拼接原文与译文；无译文时回退原文
 const compose = (orig, trans, br) => {
@@ -136,14 +135,15 @@ const parseSubtitles = (format, body) => {
         if (t == null) {
           out += m[0]; // 空 cue 与未翻出的 cue 原样输出，保留 <s> 结构
         } else {
-          const orig = xmlEscape(it.text);
-          // 分行实体 &#x000A; 不能过 xmlEscape，先各自转义再拼接
+            const orig = xmlEscape(it.text);
+          // \n 是合法 XML 字面字符且 xmlEscape 不改它；各自转义后用字面
+          // 换行拼接，与官方 srv3 多行 cue（<p>内裸文本+真换行）逐字节一致
           const inner =
             cfg.position === "only"
               ? xmlEscape(t)
               : cfg.position === "above"
-                ? `${xmlEscape(t)}${breakLine.xml}${orig}`
-                : `${orig}${breakLine.xml}${xmlEscape(t)}`;
+                ? `${xmlEscape(t)}\n${orig}`
+                : `${orig}\n${xmlEscape(t)}`;
           out += `<p${it.attrs}>${inner}</p>`;
         }
         last = m.index + m[0].length;
@@ -166,18 +166,38 @@ const detectFormat = (url, body) => {
 
 const httpPost = (payload, timeout) =>
   new Promise((resolve) => {
-    $httpClient.post(
-      {
-        url: endpoint,
-        timeout,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${cfg.apiKey}`,
+    let settled = false;
+    const done_ = (r) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    // JS 级兜底定时：万一 Surge 的 timeout 选项对不回调的挂起连接失效，
+    // promise 也必然返回，脚本不会拖到模块超时被强杀（真机表现为字幕加载失败）
+    const timer =
+      typeof setTimeout === "function"
+        ? setTimeout(() => done_({ err: "timeout" }), timeout * 1000)
+        : null;
+    try {
+      $httpClient.post(
+        {
+          url: endpoint,
+          timeout,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${cfg.apiKey}`,
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify(payload),
-      },
-      (err, resp, data) => resolve({ err, status: resp && resp.status, data })
-    );
+        (err, resp, data) => {
+          if (timer !== null) clearTimeout(timer);
+          done_({ err, status: resp && resp.status, data });
+        }
+      );
+    } catch (e) {
+      if (timer !== null) clearTimeout(timer);
+      done_({ err: String(e) });
+    }
   });
 
 // 从模型输出中取出译文数组，容忍 markdown 围栏与 {translations:[...]}/裸数组两种形态
