@@ -8,7 +8,7 @@
  *   服务商 / API Key / Base URL / 模型 / 目标语言 / 双语位置 / 翻译缓存
  * - App 内手动选择"自动翻译"语言的请求（URL 带 tlang）原样放行；
  *   未配置 API Key、格式不识别或翻译失败时同样原样返回，不影响原始字幕
- * - 缓存按行存"译文字典"（key=服务商|模型|目标语言），与字幕格式/双语位置
+ * - 缓存按行存"译文字典"（key=服务商|模型|源语言|目标语言），与字幕格式/双语位置
  *   无关，跨视频复用；未翻出的行下次请求自动续翻，逐步收敛到完整双语
  */
 
@@ -42,11 +42,15 @@ const cfg = {
 };
 
 const provider = PROVIDERS[cfg.provider] || PROVIDERS.deepseek;
-const endpoint = `${(cfg.baseUrl || provider.base).replace(/\/+$/, "")}/chat/completions`;
+const baseEp = (cfg.baseUrl || provider.base).replace(/\/+$/, "");
+// base_url 已带 /chat/completions 时不再重复拼接
+const endpoint = /\/chat\/completions$/.test(baseEp)
+  ? baseEp
+  : `${baseEp}/chat/completions`;
 const model = cfg.model || provider.model;
 
 const log = (m) => console.log(`[yt-sub] ${m}`);
-if (/^http:\/\//.test(endpoint)) log("WARN: http:// 端点，API Key 将明文传输");
+if (/^http:\/\//i.test(endpoint)) log("WARN: http:// 端点，API Key 将明文传输");
 
 const getParam = (url, name) => {
   const m = url.match(new RegExp(`[?&]${name}=([^&]*)`));
@@ -297,10 +301,10 @@ const saveCache = (c) => {
 
 (async () => {
   const body = $response.body;
-  const finish = (b) => $done({ body: b });
+  const finish = (b) => (b == null ? $done({}) : $done({ body: b }));
   try {
     const url = $request.url || "";
-    if (!body) return finish(body);
+    if (!body) return finish(null);
     if (!cfg.apiKey) {
       log("no api_key, pass through (BoxJS 中填写 youtube_subtitle.api_key)");
       return finish(body);
@@ -316,17 +320,23 @@ const saveCache = (c) => {
 
     const v = getParam(url, "v") || "";
     const lang = getParam(url, "lang") || "";
-    const kind = getParam(url, "kind") || "";
     const texts = parsed.items.filter((i) => i.text.trim()).map((i) => i.text);
 
-    // 译文字典：按 服务商|模型|目标语言 分组的行级 原文→译文 表，
-    // 与字幕格式/双语位置无关，跨视频复用；缺行只补未翻部分
-    const dictKey = `${cfg.provider}|${model}|${cfg.targetLang}`;
+    // 译文字典：按 服务商|模型|源语言|目标语言 分组的行级 原文→译文 表，
+    // 与字幕格式/双语位置无关，跨视频复用；缺行只补未翻部分。
+    // 源语言必须进 key——同形异义词（英德 die）译文不同；JSON.stringify 防
+    // 可配置值含 | 撞键
+    const dictKey = JSON.stringify([cfg.provider, model, lang, cfg.targetLang]);
     const cache = cfg.cache ? loadCache() : null;
-    const dict = Object.assign(Object.create(null), cache && cache.data[dictKey]);
+    const rawDict = cache && cache.data[dictKey];
+    const dict = Object.assign(
+      Object.create(null),
+      rawDict && typeof rawDict === "object" ? rawDict : null
+    );
 
     const unique = [...new Set(texts)];
-    const missing = unique.filter((l) => typeof dict[l] !== "string");
+    // 空串译文视为未完成，下次重试
+    const missing = unique.filter((l) => typeof dict[l] !== "string" || !dict[l]);
     log(`${v} ${lang} cues=${texts.length} unique=${unique.length} miss=${missing.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
 
     let added = 0;
@@ -350,14 +360,16 @@ const saveCache = (c) => {
     }
     const merged = parsed.rebuild(map);
 
-    if (cache && added) {
-      // 字典超限时淘汰最旧行；组合级 LRU 与体积上限在 saveCache 处理
-      const ks = Object.keys(dict);
-      if (ks.length > DICT_MAX) {
-        for (const k of ks.slice(0, ks.length - DICT_MAX)) delete dict[k];
-      }
+    if (cache) {
+      // 命中也要刷新 LRU 位置；有新增行时才做字典裁剪与回写
       cache.order = cache.order.filter((k) => k !== dictKey).concat(dictKey);
-      cache.data[dictKey] = dict;
+      if (added) {
+        const ks = Object.keys(dict);
+        if (ks.length > DICT_MAX) {
+          for (const k of ks.slice(0, ks.length - DICT_MAX)) delete dict[k];
+        }
+        cache.data[dictKey] = dict;
+      }
       saveCache(cache);
     }
     return finish(merged);
