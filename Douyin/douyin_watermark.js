@@ -60,14 +60,41 @@ const fixAclShare = (p) => {
 const unlockAweme = (a) => {
   if (!a || typeof a !== "object") return;
   a.prevent_download = false;
-  if (a.status && typeof a.status === "object") {
-    a.status.reviewed = 1;
-    a.status.allow_share = true;
-    a.status.is_prohibited = false;
+  a.without_watermark = true;
+  // 来源标记：external_video_type=1/aweme_type=107 被 isAwemeFromXiGua 判为
+  // 西瓜视频来源并禁止保存（"作品暂时无法保存"），归一化即可解除
+  if ("external_video_type" in a) a.external_video_type = 0;
+  if (a.aweme_type === 107) a.aweme_type = 0;
+  if ("item_mask_status" in a) a.item_mask_status = 0;
+
+  const st = a.status;
+  if (st && typeof st === "object") {
+    st.reviewed = 1;
+    st.allow_share = true;
+    st.is_prohibited = false;
+    // download_status 是保存按钮置灰的主开关；其余 share/可见性字段同样拦截入口
+    st.download_status = 0;
+    st.dont_share_status = 0;
+    st.share_grayed = false;
+    st.is_delete = false;
+    st.in_reviewing = false;
+    st.is_private = false;
+    st.private_status = 0;
+    st.self_see = false;
+    st.part_see = 0;
   }
+
+  const ac = a.aweme_control;
+  if (ac && typeof ac === "object") {
+    ac.can_share = true;
+    ac.can_forward = true;
+  }
+
   const vc = a.video_control;
   if (vc && typeof vc === "object") {
     vc.allow_download = true;
+    vc.allow_share = true;
+    vc.share_grayed = false;
     vc.prevent_download_type = 0;
     vc.download_ignore_visibility = true;
     // download_info 是"作者已关闭下载/此类型视频暂不支持下载"提示的直接来源：
@@ -117,7 +144,6 @@ const unlockAweme = (a) => {
       }
       deepFix(img, 0);
     }
-    a.without_watermark = true;
   }
 
   for (const lv of a.long_video || []) {
