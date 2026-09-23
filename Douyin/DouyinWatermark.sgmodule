@@ -4,7 +4,7 @@
 
 [Script]
 # 信息流/详情/个人页/搜索：视频与图集条目改写
-抖音视频图片去水印 = type=http-response, pattern=^https?:\/\/((aweme|aweme-eagle|aweme-lq|aweme-hl)\.snssdk\.com|[\w.-]+\.amemv\.com)\/aweme\/v\d+\/(feed|follow\/feed|nearby\/feed|familiar\/feed|tab\/feed|aweme\/post|aweme\/detail|aweme\/favorite|aweme\/related|aweme\/listcollection|mix\/aweme|search\/item|general\/search\/single|hot\/search\/video\/list|discover\/search)(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Douyin/douyin_watermark.js, requires-body=true, timeout=60
+抖音视频图片去水印 = type=http-response, pattern=^https?:\/\/((aweme|aweme-eagle|aweme-lq|aweme-hl)\.snssdk\.com|[\w.-]+\.amemv\.com)\/aweme\/v\d+\/(web\/)?(feed|follow\/feed|nearby\/feed|familiar\/feed|tab\/feed|aweme\/post|aweme\/detail|aweme\/favorite|aweme\/related|aweme\/listcollection|mix\/aweme|search\/item|general\/search\/single|hot\/search\/video\/list|discover\/search)(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Douyin/douyin_watermark.js, requires-body=true, timeout=60
 
 # 评论区：image_list 的 download_url 为水印变体，换成 origin_url 原图；视频评论同步改写
 抖音评论去水印 = type=http-response, pattern=^https?:\/\/((aweme|aweme-eagle|aweme-lq|aweme-hl)\.snssdk\.com|[\w.-]+\.amemv\.com)\/aweme\/v\d+\/(web\/)?comment\/(list|list\/reply)(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Douyin/douyin_watermark.js, requires-body=true, timeout=60

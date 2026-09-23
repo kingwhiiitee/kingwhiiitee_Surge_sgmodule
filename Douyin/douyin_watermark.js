@@ -61,11 +61,20 @@ const unlockAweme = (a) => {
   if (!a || typeof a !== "object") return;
   a.prevent_download = false;
   a.without_watermark = true;
+  a.is_prohibited = false;
+  a.can_cache_to_local = true;
   // 来源标记：external_video_type=1/aweme_type=107 被 isAwemeFromXiGua 判为
   // 西瓜视频来源并禁止保存（"作品暂时无法保存"），归一化即可解除
   if ("external_video_type" in a) a.external_video_type = 0;
   if (a.aweme_type === 107) a.aweme_type = 0;
   if ("item_mask_status" in a) a.item_mask_status = 0;
+  if ("preview_video_status" in a) a.preview_video_status = 0;
+  // 作者/音乐维度的"作者已关闭下载"开关
+  if (a.author && typeof a.author === "object") a.author.prevent_download = false;
+  if (a.music && typeof a.music === "object") {
+    a.music.prevent_download = false;
+    a.music.prevent_item_download_status = 0;
+  }
 
   const st = a.status;
   if (st && typeof st === "object") {
@@ -125,8 +134,15 @@ const unlockAweme = (a) => {
   }
 
   for (const img of a.images || []) {
-    if (Array.isArray(img?.url_list) && img.url_list.length) {
-      img.download_url_list = img.url_list;
+    // watermark_free_download_url_list 是官方的无水印下载变体，优先使用；
+    // 否则回退到 url_list 原图
+    const clean =
+      (Array.isArray(img?.watermark_free_download_url_list) &&
+        img.watermark_free_download_url_list.length &&
+        img.watermark_free_download_url_list) ||
+      img?.url_list;
+    if (Array.isArray(clean) && clean.length) {
+      img.download_url_list = clean;
     }
     // 实况图挂的视频走同一套视频改写
     if (img?.video && typeof img.video === "object") unlockVideoFields(img.video);
@@ -184,7 +200,7 @@ if (obj == null) {
   $done({});
 } else {
   // 信息流：feed/post/detail/favorite/related/搜索等返回的 aweme 条目
-  for (const key of ["aweme_list", "aweme_details"]) {
+  for (const key of ["aweme_list", "aweme_details", "item_list"]) {
     if (Array.isArray(obj[key])) {
       for (const a of obj[key]) unlockAweme(a);
     }
@@ -199,6 +215,7 @@ if (obj == null) {
     if (b.aweme_info) unlockAweme(b.aweme_info);
     if (b.aweme_detail) unlockAweme(b.aweme_detail);
     for (const a of b.aweme_list || []) unlockAweme(a);
+    for (const a of b.item_list || []) unlockAweme(a);
     if (!b.aweme && !b.aweme_info && (b.video || b.images || b.image_post_info)) {
       unlockAweme(b);
     }
