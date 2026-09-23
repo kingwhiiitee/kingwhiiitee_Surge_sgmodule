@@ -1,5 +1,5 @@
 #!name= 抖音视频图片评论去水印
-#!desc= 去除视频、图集与评论区图片/视频（文字/图片评论）的下载水印，解除保存限制（含"此类型视频暂不支持下载"的类型级限制）。需开启 MITM 并信任证书；如未生效请清除抖音缓存后重试。
+#!desc= 去除视频、图集与评论区图片/视频（文字/图片评论）的下载水印，解除保存限制（含"此类型视频暂不支持下载"的类型级限制）；另支持分享页去水印——在 Safari/浏览器打开 v.douyin.com 分享链接时页面底部会出现"无水印下载"栏，点击直接保存原片/原图。需开启 MITM 并信任证书；如未生效请清除抖音缓存后重试。
 #!author= kingwhiiitee
 
 [Script]
@@ -9,5 +9,8 @@
 # 评论区：image_list 的 download_url 为水印变体，换成 origin_url 原图；视频评论同步改写
 抖音评论去水印 = type=http-response, pattern=^https?:\/\/((aweme|aweme-eagle|aweme-lq|aweme-hl)\.snssdk\.com|[\w.-]+\.amemv\.com)\/aweme\/v\d+\/(web\/)?comment\/(list|list\/reply)\/?(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Douyin/douyin_watermark.js, requires-body=true, timeout=60
 
+# 分享页（iesdouyin/douyin 网页，无证书固定）：抽出无水印地址注入"无水印下载"栏
+抖音分享页去水印 = type=http-response, pattern=^https?:\/\/[\w.-]*(iesdouyin|douyin)\.com\/(share\/)?(video|note|image|slides|music)\/, script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Douyin/douyin_share_dl.js, requires-body=true, timeout=60
+
 [MITM]
-hostname = %APPEND% aweme.snssdk.com, aweme-eagle.snssdk.com, aweme-lq.snssdk.com, aweme-hl.snssdk.com, *.amemv.com
+hostname = %APPEND% aweme.snssdk.com, aweme-eagle.snssdk.com, aweme-lq.snssdk.com, aweme-hl.snssdk.com, *.amemv.com, v.douyin.com, *.iesdouyin.com, iesdouyin.com, www.douyin.com, m.douyin.com
