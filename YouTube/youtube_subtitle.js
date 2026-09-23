@@ -387,16 +387,23 @@ const saveCache = (c) => {
     const merged = parsed.rebuild(map);
 
     if (cache) {
-      // 命中也刷新 LRU；保存前重读缓存再合并本字典——缩小并发覆盖窗口，
-      // 且并发方淘汰本组后此处恢复数据，order 与 data 不产生幽灵项
+      // 命中也刷新 LRU；保存前重读缓存再合并——缩小并发覆盖窗口。
+      // 只合并本请求字幕用到/新翻的行：整体回写旧快照会把并发方已淘汰的行
+      // 复活到最新位并挤掉新行；本组被并发方淘汰（existing 缺失）时才用全量
+      // dict 恢复，顺带保证 order 与 data 不产生幽灵项
       const fresh = loadCache();
       fresh.order = fresh.order.filter((k) => k !== dictKey).concat(dictKey);
       const existing = fresh.data[dictKey];
-      // 合并进 null 原型对象：字幕行若含 "__proto__" 字面量不会触发 setter
+      const used = Object.create(null);
+      for (const l of unique) {
+        const t = dict[l];
+        if (typeof t === "string" && t) used[l] = t;
+      }
+      // null 原型合并：字幕行若含 "__proto__" 字面量不会触发 setter
       const mergedDict = Object.assign(
         Object.create(null),
-        existing && typeof existing === "object" ? existing : null,
-        dict
+        existing && typeof existing === "object" ? existing : dict,
+        used
       );
       const ks = Object.keys(mergedDict);
       if (ks.length > DICT_MAX) {
