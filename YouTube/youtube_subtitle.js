@@ -2,7 +2,8 @@
  * YouTube App 双语字幕（Surge http-response 脚本）
  * - 拦截 www/m.youtube.com/api/timedtext 的字幕响应，逐行调用 OpenAI 兼容
  *   接口（DeepSeek / OpenAI 二选一）翻译，按原格式回写成双语字幕
- * - srv3(ttml/xml)：每个 <p> cue 内以 &#x000A; 追加译文行
+ * - srv3(ttml/xml)：每个 <p> cue 内以字面换行追加译文行（与官方多行 cue 的
+ *   字节形态一致；对 XML 解析器而言与 &#x000A; 实体等价）
  *   json3：每个 event 的 segs 合并为一段 utf8，以 \n 追加译文行
  * - 参数全部在 BoxJS《YouTube AI双语字幕》中调整：
  *   服务商 / API Key / Base URL / 模型 / 目标语言 / 双语位置 / 翻译缓存
@@ -17,10 +18,13 @@ const PROVIDERS = {
   openai: { base: "https://api.openai.com/v1", model: "gpt-4o-mini" },
 };
 
-const CHUNK_LINES = 45; // 每次请求翻译的行数
+const CHUNK_LINES = 20; // 每次请求翻译的行数（小批次才能在预算内翻完）
 const CONCURRENCY = 3; // 并发翻译请求数
-const API_TIMEOUT = 45; // 单次 LLM 请求超时（秒）
-const BUDGET_MS = 105 * 1000; // 全局翻译时限（模块 timeout=120，预留回写余量）
+const API_TIMEOUT = 15; // 单次 LLM 请求超时（秒）
+// 全局翻译时限。瓶颈不是模块 timeout=120，而是 YouTube App 自己的请求超时：
+// 等不到响应它直接显示"加载字幕出错"。宁可本轮只翻一部分——翻出的行进缓存，
+// 剩下的下次开字幕自动续翻，逐步收敛到完整双语
+const BUDGET_MS = 20 * 1000;
 const CACHE_KEY = "youtube_subtitle.cache.data";
 const CACHE_MAX = 6; // 缓存的 服务商|模型|目标语言 组合数（LRU）
 const DICT_MAX = 3000; // 每组译文字典的最大行数
@@ -69,8 +73,6 @@ const xmlDecode = (s) =>
 
 const xmlEscape = (s) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-const breakLine = { xml: "&#x000A;", json: "\n" };
 
 // 按 position 拼接原文与译文；无译文时回退原文
 const compose = (orig, trans, br) => {
@@ -137,13 +139,14 @@ const parseSubtitles = (format, body) => {
           out += m[0]; // 空 cue 与未翻出的 cue 原样输出，保留 <s> 结构
         } else {
           const orig = xmlEscape(it.text);
-          // 分行实体 &#x000A; 不能过 xmlEscape，先各自转义再拼接
+          // \n 是合法 XML 字面字符且 xmlEscape 不改它；各自转义后用字面换行
+          // 拼接，与官方 srv3 多行 cue（<p> 内裸文本 + 真换行）形态一致
           const inner =
             cfg.position === "only"
               ? xmlEscape(t)
               : cfg.position === "above"
-                ? `${xmlEscape(t)}${breakLine.xml}${orig}`
-                : `${orig}${breakLine.xml}${xmlEscape(t)}`;
+                ? `${xmlEscape(t)}\n${orig}`
+                : `${orig}\n${xmlEscape(t)}`;
           out += `<p${it.attrs}>${inner}</p>`;
         }
         last = m.index + m[0].length;
@@ -166,18 +169,40 @@ const detectFormat = (url, body) => {
 
 const httpPost = (payload, timeout) =>
   new Promise((resolve) => {
-    $httpClient.post(
-      {
-        url: endpoint,
-        timeout,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${cfg.apiKey}`,
+    let settled = false;
+    const done_ = (r) => {
+      if (settled) return;
+      settled = true;
+      resolve(r);
+    };
+    // JS 级兜底定时：万一 Surge 的 timeout 选项对不回调的挂起连接失效，
+    // promise 也必然返回，脚本不会拖到模块超时被强杀（真机表现为字幕加载失败）。
+    // 留 1.5s 余量，否则本定时器总比 $httpClient 自己的超时回调先触发，等于
+    // 把 Surge 的超时处理整个架空
+    const timer =
+      typeof setTimeout === "function"
+        ? setTimeout(() => done_({ err: "timeout" }), timeout * 1000 + 1500)
+        : null;
+    try {
+      $httpClient.post(
+        {
+          url: endpoint,
+          timeout,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${cfg.apiKey}`,
+          },
+          body: JSON.stringify(payload),
         },
-        body: JSON.stringify(payload),
-      },
-      (err, resp, data) => resolve({ err, status: resp && resp.status, data })
-    );
+        (err, resp, data) => {
+          if (timer !== null) clearTimeout(timer);
+          done_({ err, status: resp && resp.status, data });
+        }
+      );
+    } catch (e) {
+      if (timer !== null) clearTimeout(timer);
+      done_({ err: String(e) });
+    }
   });
 
 // 从模型输出中取出译文数组，容忍 markdown 围栏与 {translations:[...]}/裸数组两种形态
@@ -237,6 +262,12 @@ const translateChunk = async (lines, deadline) => {
     try {
       const timeout = Math.min(API_TIMEOUT, Math.floor(remaining / 1000) - 2);
       const { err, status, data } = await httpPost(payload, timeout);
+      if (err === "timeout") {
+        // 兜底定时触发时在途请求并未取消，重试会让同一批行有两个请求同时在飞
+        // （双倍计费，先回的还会被丢弃）；预算内也跑不完第二次，直接放弃这批
+        log(`llm timeout, drop ${lines.length} lines`);
+        return null;
+      }
       if (err || !status || status < 200 || status >= 300) {
         log(`llm ${status || err} retry=${attempt}`);
         continue;
