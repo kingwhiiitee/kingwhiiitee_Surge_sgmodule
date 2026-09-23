@@ -1,5 +1,5 @@
-#!name= 小红书图片去水印
-#!desc= 去除图文笔记、实况照片与评论区图片的下载水印，解除图片保存限制。需开启 MITM 并信任证书；如未生效请清除小红书缓存后重试。
+#!name= 小红书图片视频去水印
+#!desc= 去除图文/视频笔记、实况照片与评论区图片的下载水印，解除媒体保存限制。需开启 MITM 并信任证书；如未生效请清除小红书缓存后重试。
 #!author= kingwhiiitee
 
 [Map Local]
@@ -8,6 +8,7 @@
 
 [Script]
 小红书图片去水印 = type=http-response, pattern=^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d\/note\/(imagefeed|feed|live_photo\/save)(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Xiaohongshu/xiaohongshu_watermark.js, requires-body=true, timeout=60
+小红书视频去水印 = type=http-response, pattern=^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/v\d\/note\/(videofeed|video\/save)(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Xiaohongshu/xiaohongshu_watermark.js, requires-body=true, timeout=60
 小红书评论图片去水印 = type=http-response, pattern=^https?:\/\/(edith|rec|www)\.xiaohongshu\.com\/api\/sns\/(v5\/note\/comment\/list|v3\/note\/comment\/sub_comments)(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Xiaohongshu/xiaohongshu_watermark.js, requires-body=true, timeout=60
 
 [MITM]
