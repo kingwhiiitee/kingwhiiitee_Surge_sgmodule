@@ -197,6 +197,72 @@ ok('3000ms 时限快速回退原文', r.out.body===SRV3 && Date.now()-t0<1000);
 r=await run({url:U,body:SRV3,store:{'youtube_subtitle.budget_ms':'abc'},post:reply(l=>'B:'+l)});
 ok('非法时限回退默认值并正常翻译', r.out.body.includes('>Hello\nB:Hello<'));
 
+console.log('谷歌翻译');
+const googleStore={'youtube_subtitle.provider':'google','youtube_subtitle.api_key':''};
+const googleRequests=[];
+const gpost=sink=>(o,cb)=>{if(sink) sink.push(o);
+  const qs=(o.body||'').split('&').filter(Boolean).map(x=>decodeURIComponent(x.slice(2)));
+  setTimeout(()=>cb(null,{status:200},JSON.stringify(qs.map(x=>'译'+x))),1);};
+r=await run({url:U,body:SRV3,store:googleStore,post:gpost(googleRequests)});
+const googleRequest=googleRequests[0]||{};
+const googleUrl=googleRequest.url||'';
+const googleParams=new URLSearchParams(googleUrl.split('?')[1]||'');
+const googleBody=googleRequest.body||'';
+const googleQs=googleBody.split('&').filter(Boolean);
+const googleHeaders=googleRequest.headers||{};
+const googleHeader=name=>Object.keys(googleHeaders).find(k=>k.toLowerCase()===name.toLowerCase());
+ok('谷歌无 key 仍产出双语', r.out.body.includes('>Hello\n译Hello<') && r.out.body.includes('>Are you ok?\n译Are you ok?<'));
+ok('谷歌请求指向 translate_a/t', googleUrl.startsWith('https://translate.googleapis.com/translate_a/t?'));
+ok('谷歌请求包含 client=gtx', googleParams.get('client')==='gtx');
+ok('谷歌请求只带实测过的最小参数', [...googleParams.keys()].sort().join(',')==='client,sl,tl');
+ok('默认简体中文映射为 zh-CN', googleParams.get('tl')==='zh-CN');
+ok('字幕语言 lang=en 映射为 sl=en', googleParams.get('sl')==='en');
+ok('谷歌请求使用 q 表单而非 JSON', googleQs.every(x=>x.startsWith('q=')) && googleQs.length>0 && !googleBody.startsWith('{'));
+ok('q 数量等于非空字幕行数', googleQs.length===2);
+ok('q 值经过 encodeURIComponent 编码', googleQs.includes('q=Are%20you%20ok%3F'));
+ok('谷歌请求使用表单 Content-Type', googleHeaders[googleHeader('Content-Type')]==='application/x-www-form-urlencoded');
+ok('谷歌请求携带 User-Agent', !!googleHeaders[googleHeader('User-Agent')]);
+ok('谷歌请求不带 Authorization', !googleHeader('Authorization'));
+
+const googleJa=[];
+r=await run({url:U,body:SRV3,store:{...googleStore,'youtube_subtitle.target_lang':'繁体中文','youtube_subtitle.target_code':'ja'},post:gpost(googleJa)});
+ok('显式 target_code 优先于语言名映射', new URLSearchParams((googleJa[0]?.url||'').split('?')[1]||'').get('tl')==='ja');
+const googleTraditional=[];
+r=await run({url:U,body:SRV3,store:{...googleStore,'youtube_subtitle.target_lang':'繁体中文'},post:gpost(googleTraditional)});
+ok('繁体中文映射为 zh-TW', new URLSearchParams((googleTraditional[0]?.url||'').split('?')[1]||'').get('tl')==='zh-TW');
+const googleUnknown=[];
+r=await run({url:U,body:SRV3,store:{...googleStore,'youtube_subtitle.target_lang':'克林贡语'},post:gpost(googleUnknown)});
+ok('未知目标语言退回 zh-CN', new URLSearchParams((googleUnknown[0]?.url||'').split('?')[1]||'').get('tl')==='zh-CN');
+
+r=await run({url:U,body:SRV3,store:googleStore,post:(o,cb)=>{
+  const qs=(o.body||'').split('&').filter(Boolean);
+  setTimeout(()=>cb(null,{status:200},JSON.stringify(qs.slice(0,-1).map(()=>'译'))),1);
+}});
+ok('谷歌译文数组长度不符时回退原文', r.out.body===SRV3);
+r=await run({url:U,body:SRV3,store:googleStore,post:(o,cb)=>setTimeout(()=>cb(null,{status:200},'not JSON'),1)});
+ok('谷歌响应非法 JSON 时回退原文', r.out.body===SRV3);
+
+// sl=auto 时每项是 [译文, 识别出的源语言]
+r=await run({url:'https://www.youtube.com/api/timedtext?v=x&fmt=srv3',body:SRV3,
+  store:{'youtube_subtitle.provider':'google','youtube_subtitle.api_key':''},
+  post:(o,cb)=>{const qs=(o.body||'').split('&').filter(Boolean).map(x=>decodeURIComponent(x.slice(2)));
+    setTimeout(()=>cb(null,{status:200},JSON.stringify(qs.map(x=>['译'+x,'en']))),1);}});
+ok('谷歌 sl=auto 数组形态取首元素', r.out.body.includes('>Hello\n译Hello<'));
+
+// 实测大批次出现过非空输入拿回空译文；放过去会把空译文写进缓存
+const gstore={'youtube_subtitle.provider':'google','youtube_subtitle.api_key':''};
+r=await run({url:U+'&fmt=srv3',body:SRV3,store:gstore,
+  post:(o,cb)=>{const qs=(o.body||'').split('&').filter(Boolean).map(x=>decodeURIComponent(x.slice(2)));
+    setTimeout(()=>cb(null,{status:200},JSON.stringify(qs.map((x,i)=>i===0?'':'译'+x))),1);}});
+ok('谷歌空译文整批判失败回退原文', r.out.body===SRV3);
+let regot=0;
+r=await run({url:U+'&fmt=srv3',body:SRV3,store:r.store,
+  post:(o,cb)=>{regot++;const qs=(o.body||'').split('&').filter(Boolean).map(x=>decodeURIComponent(x.slice(2)));
+    setTimeout(()=>cb(null,{status:200},JSON.stringify(qs.map(x=>'译'+x))),1);}});
+ok('空译文未被写进缓存，下次重译', regot>0 && r.out.body.includes('译Hello'));
+r=await run({url:U,body:SRV3,store:{'youtube_subtitle.provider':'deepseek','youtube_subtitle.api_key':''},post:reply(l=>'译'+l)});
+ok('DeepSeek 无 key 仍放行原文', r.out.body===SRV3);
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail?1:0);
 })();

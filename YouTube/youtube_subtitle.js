@@ -1,7 +1,9 @@
 /*
  * YouTube App 双语字幕（Surge http-response 脚本）
- * - 拦截 www/m.youtube.com/api/timedtext 的字幕响应，逐行调用 OpenAI 兼容
- *   接口（DeepSeek / OpenAI 二选一）翻译，按原格式回写成双语字幕
+ * - 拦截 www/m.youtube.com/api/timedtext 的字幕响应，逐行调用翻译接口
+ *   （DeepSeek / OpenAI / 谷歌翻译三选一），按原格式回写成双语字幕
+ *   谷歌翻译使用免费端点、无需 API Key；目标语言使用语言代码，可由 BoxJS 的
+ *   target_code 覆盖，留空时按目标语言名自动匹配
  * - srv3(ttml/xml)：每个 <p> cue 内以字面换行追加译文行（与官方多行 cue 的
  *   字节形态一致；对 XML 解析器而言与 &#x000A; 实体等价）
  *   json3：每个 event 的 segs 合并为一段 utf8，以 \n 追加译文行
@@ -11,14 +13,15 @@
  *   服务商 / API Key / Base URL / 模型 / 目标语言 / 双语位置 / 翻译缓存
  * - BoxJS 可调整 mode 四档诊断开关与 budget_ms；日志前缀为 [yt-sub]
  * - App 内手动选择"自动翻译"语言的请求（URL 带 tlang）原样放行；
- *   未配置 API Key、格式不识别或翻译失败时同样原样返回，不影响原始字幕
+ *   DeepSeek/OpenAI 未配置 API Key、格式不识别或翻译失败时同样原样返回，不影响原始字幕
  * - 缓存按行存"译文字典"（key=服务商|模型|源语言|目标语言），与字幕格式/双语位置
  *   无关，跨视频复用；未翻出的行下次请求自动续翻，逐步收敛到完整双语
  */
 
 const PROVIDERS = {
-  deepseek: { base: "https://api.deepseek.com", model: "deepseek-chat" },
-  openai: { base: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  deepseek: { kind: "openai", base: "https://api.deepseek.com", model: "deepseek-chat" },
+  openai: { kind: "openai", base: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+  google: { kind: "google", base: "https://translate.googleapis.com/translate_a/t", model: "gtx" },
 };
 
 const CHUNK_LINES = 20; // 每次请求翻译的行数（小批次才能在预算内翻完）
@@ -48,16 +51,31 @@ const cfg = {
   baseUrl: readKey("base_url", ""),
   model: readKey("model", ""),
   targetLang: readKey("target_lang", "简体中文"),
+  targetCode: readKey("target_code", ""),
   position: readKey("position", "below"), // below=原上译下 above=译上原下 only=仅译文
   cache: String(readKey("cache", "true")) !== "false",
 };
 
+const LANG_CODES = {
+  简体中文: "zh-CN", 中文: "zh-CN", 繁体中文: "zh-TW", 繁體中文: "zh-TW",
+  英语: "en", 英文: "en", 日语: "ja", 日文: "ja", 韩语: "ko", 韩文: "ko",
+  法语: "fr", 德语: "de", 西班牙语: "es", 俄语: "ru",
+};
+// 用户显式填了代码就用它；否则按目标语言名查表；都没有就退回 zh-CN
+const targetCode = cfg.targetCode || LANG_CODES[cfg.targetLang] || "zh-CN";
+
 const provider = PROVIDERS[cfg.provider] || PROVIDERS.deepseek;
+const isGoogle = provider.kind === "google";
+// 谷歌是查表式翻译、无 token 生成，单次更快也能吃更大批次
+const chunkLines = isGoogle ? 80 : CHUNK_LINES;
+const apiTimeout = isGoogle ? 8 : API_TIMEOUT;
 const baseEp = (cfg.baseUrl || provider.base).replace(/\/+$/, "");
 // base_url 已带 /chat/completions 时不再重复拼接
-const endpoint = /\/chat\/completions$/.test(baseEp)
-  ? baseEp
-  : `${baseEp}/chat/completions`;
+const endpoint = isGoogle
+  ? cfg.baseUrl || provider.base
+  : /\/chat\/completions$/.test(baseEp)
+    ? baseEp
+    : `${baseEp}/chat/completions`;
 const model = cfg.model || provider.model;
 
 const T0 = Date.now();
@@ -252,7 +270,7 @@ const detectFormat = (url, body) => {
   return null;
 };
 
-const httpPost = (payload, timeout) =>
+const httpPost = (req, timeout) =>
   new Promise((resolve) => {
     let settled = false;
     const done_ = (r) => {
@@ -271,13 +289,10 @@ const httpPost = (payload, timeout) =>
     try {
       $httpClient.post(
         {
-          url: endpoint,
+          url: req.url,
           timeout,
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${cfg.apiKey}`,
-          },
-          body: JSON.stringify(payload),
+          headers: req.headers,
+          body: req.body,
         },
         (err, resp, data) => {
           if (timer !== null) clearTimeout(timer);
@@ -289,6 +304,41 @@ const httpPost = (payload, timeout) =>
       done_({ err: String(e) });
     }
   });
+
+const buildOpenAIReq = (lines) => ({
+  url: endpoint,
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.apiKey}` },
+  body: JSON.stringify({
+    model,
+    temperature: 0.2,
+    messages: [
+      {
+        role: "system",
+        content:
+          `You are a subtitle translation engine. Translate each input line into ${cfg.targetLang}. ` +
+          `Return ONLY a JSON object {"translations":[...]} with exactly ${lines.length} items in the same order. ` +
+          `Use natural, concise spoken-subtitle style; never merge, split, or omit lines; ` +
+          `preserve "\\n" inside a line; translate meaning rather than word-for-word.`,
+      },
+      { role: "user", content: JSON.stringify(lines) },
+    ],
+  }),
+});
+
+// translate_a/t 接收多个 q，返回与输入等长、顺序一致的字符串数组。
+// 源语言用字幕轨道自带的 lang，取不到时交给 auto
+const buildGoogleReq = (lines, srcLang) => {
+  const qs = lines.map((l) => `q=${encodeURIComponent(l)}`).join("&");
+  const sl = srcLang || "auto";
+  return {
+    url: `${endpoint}?client=gtx&sl=${encodeURIComponent(sl)}&tl=${encodeURIComponent(targetCode)}`,
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "Mozilla/5.0",
+    },
+    body: qs,
+  };
+};
 
 // 从模型输出中取出译文数组，容忍 markdown 围栏与 {translations:[...]}/裸数组两种形态
 const extractTranslations = (content, expected) => {
@@ -322,22 +372,27 @@ const extractTranslations = (content, expected) => {
   return null;
 };
 
-const translateChunk = async (lines, deadline) => {
-  const payload = {
-    model,
-    temperature: 0.2,
-    messages: [
-      {
-        role: "system",
-        content:
-          `You are a subtitle translation engine. Translate each input line into ${cfg.targetLang}. ` +
-          `Return ONLY a JSON object {"translations":[...]} with exactly ${lines.length} items in the same order. ` +
-          `Use natural, concise spoken-subtitle style; never merge, split, or omit lines; ` +
-          `preserve "\\n" inside a line; translate meaning rather than word-for-word.`,
-      },
-      { role: "user", content: JSON.stringify(lines) },
-    ],
-  };
+// 返回体是 JSON 数组，与输入等长、顺序一致。指定 sl 时每项是字符串；
+// sl=auto 时每项是 [译文, 识别出的源语言]，取首元素。
+// HTTP 200 不足以判定成功：实测大批次里出现过非空输入拿回 "" 的情况，
+// 放过去会把空译文写进缓存、该行以后永远不再重译，所以整批判失败重来
+const extractGoogle = (data, lines) => {
+  let a;
+  try { a = JSON.parse(data); } catch (e) { return null; }
+  if (typeof a === "string") a = [a];
+  if (!Array.isArray(a) || a.length !== lines.length) return null;
+  const out = a.map((x) =>
+    typeof x === "string" ? x : Array.isArray(x) && typeof x[0] === "string" ? x[0] : ""
+  );
+  for (let i = 0; i < out.length; i++) {
+    if (!out[i] && lines[i].trim()) return null;
+  }
+  return out;
+};
+
+const tag = isGoogle ? "gt" : "llm";
+
+const translateChunk = async (lines, deadline, srcLang) => {
   for (let attempt = 0; attempt < 2; attempt++) {
     const remaining = deadline - Date.now();
     if (remaining < 5000) {
@@ -345,25 +400,31 @@ const translateChunk = async (lines, deadline) => {
       return null;
     }
     try {
-      const timeout = Math.min(API_TIMEOUT, Math.floor(remaining / 1000) - 2);
-      const { err, status, data } = await httpPost(payload, timeout);
+      const timeout = Math.min(apiTimeout, Math.floor(remaining / 1000) - 2);
+      const req = isGoogle ? buildGoogleReq(lines, srcLang) : buildOpenAIReq(lines);
+      const { err, status, data } = await httpPost(req, timeout);
       if (err === "timeout") {
         // 兜底定时触发时在途请求并未取消，重试会让同一批行有两个请求同时在飞
         // （双倍计费，先回的还会被丢弃）；预算内也跑不完第二次，直接放弃这批
-        log(`llm timeout, drop ${lines.length} lines`);
+        log(`${tag} timeout, drop ${lines.length} lines`);
         return null;
       }
       if (err || !status || status < 200 || status >= 300) {
-        log(`llm ${status || err} retry=${attempt}`);
+        log(`${tag} ${status || err} retry=${attempt}`);
         continue;
       }
-      const obj = JSON.parse(data);
-      const content = obj && obj.choices && obj.choices[0] && obj.choices[0].message && obj.choices[0].message.content;
-      const arr = extractTranslations(content, lines.length);
+      let arr;
+      if (isGoogle) {
+        arr = extractGoogle(data, lines);
+      } else {
+        const obj = JSON.parse(data);
+        const content = obj && obj.choices && obj.choices[0] && obj.choices[0].message && obj.choices[0].message.content;
+        arr = extractTranslations(content, lines.length);
+      }
       if (arr) return arr;
-      log(`llm output mismatch expect=${lines.length} retry=${attempt}`);
+      log(`${tag} output mismatch expect=${lines.length} retry=${attempt}`);
     } catch (e) {
-      log(`llm error ${e} retry=${attempt}`);
+      log(`${tag} error ${e} retry=${attempt}`);
     }
   }
   return null;
@@ -371,10 +432,10 @@ const translateChunk = async (lines, deadline) => {
 
 // 分批并发翻译；返回 Map(原文→译文)，失败的行不放入 map（回退原文）。
 // deadline 之后不再取新批次/重试，已完成的行照常可用
-const translateAll = async (uniqueLines, deadline) => {
+const translateAll = async (uniqueLines, deadline, srcLang) => {
   const chunks = [];
-  for (let i = 0; i < uniqueLines.length; i += CHUNK_LINES) {
-    chunks.push(uniqueLines.slice(i, i + CHUNK_LINES));
+  for (let i = 0; i < uniqueLines.length; i += chunkLines) {
+    chunks.push(uniqueLines.slice(i, i + chunkLines));
   }
   const results = new Array(chunks.length).fill(null);
   let cursor = 0;
@@ -383,7 +444,7 @@ const translateAll = async (uniqueLines, deadline) => {
     async () => {
       while (cursor < chunks.length && Date.now() < deadline - 3000) {
         const i = cursor++;
-        results[i] = await translateChunk(chunks[i], deadline);
+        results[i] = await translateChunk(chunks[i], deadline, srcLang);
       }
     }
   );
@@ -462,8 +523,8 @@ const saveCache = (c) => {
     if (!body) return finish(null, "no-body");
     if (cfg.mode === "headers") return finish(body, "mode=headers");
     const url = $request.url || "";
-    if (!cfg.apiKey) {
-      log("no api_key, pass through (BoxJS 中填写 youtube_subtitle.api_key)");
+    if (!isGoogle && !cfg.apiKey) {
+      log("no api_key, DeepSeek/OpenAI 需要在 BoxJS 中填写 youtube_subtitle.api_key，pass through");
       return finish(body, "no-key");
     }
     if (getParam(url, "tlang")) {
@@ -501,7 +562,7 @@ const saveCache = (c) => {
     if (missing.length) {
       const deadline = Date.now() + cfg.budgetMs;
       log(`translate start ${ms()}ms`);
-      const got = await translateAll(missing, deadline);
+      const got = await translateAll(missing, deadline, lang);
       log(`translate done ${ms()}ms`);
       for (const [k, t] of got) dict[k] = t;
     }
