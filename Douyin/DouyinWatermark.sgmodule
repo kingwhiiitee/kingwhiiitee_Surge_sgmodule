@@ -10,4 +10,4 @@
 抖音评论去水印 = type=http-response, pattern=^https?:\/\/(aweme[\w.-]*\.snssdk\.com|[\w.-]+\.amemv\.com)\/aweme\/v\d+\/(web\/)?comment\/(list|list\/reply)(\?|$), script-path=https://raw.githubusercontent.com/kingwhiiitee/kingwhiiitee_Surge_sgmodule/main/Douyin/douyin_watermark.js, requires-body=true, timeout=60
 
 [MITM]
-hostname = %APPEND% aweme.snssdk.com, aweme-eagle.snssdk.com, aweme-lq.snssdk.com, aweme-hl.snssdk.com, *.amemv.com
+hostname = %APPEND% *.snssdk.com, *.amemv.com
