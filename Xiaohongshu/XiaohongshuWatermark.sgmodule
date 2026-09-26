@@ -6,7 +6,7 @@
 # 广告拦截：Surge 的 URL Rewrite 不支持 reject-dict，改为本地返回空 JSON
 # 广告资源、广告互动上报
 ^https?:\/\/(edith|www)\.xiaohongshu\.com\/api\/sns\/v\d\/ads\/ data-type=text data="{}" status-code=200
-^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/tag\/ads_engage data-type=text data="{}" status-code=200
+^https?:\/\/(edith|www)\.xiaohongshu\.com\/api\/sns\/v\d\/tag\/ads_engage data-type=text data="{}" status-code=200
 # 惊喜盒子、营销弹窗
 ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/surprisebox\/ data-type=text data="{}" status-code=200
 ^https?:\/\/(edith|www)\.xiaohongshu\.com\/api\/marketing\/box\/trigger data-type=text data="{}" status-code=200
