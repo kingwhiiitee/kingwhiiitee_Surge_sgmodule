@@ -11,26 +11,23 @@ const FAR_FUTURE = 3818332800;
 
 const isAd = (item) => {
   if (!item || typeof item !== "object") return false;
-  if (item.is_ads === true || item.ads_info || item.ad_info) return true;
-  if (item.model_type === "ads" || item.model_type === "ad") return true;
   const note = item.note || item.note_card;
-  return !!(note && (note.is_ads === true || note.ads_info));
+  return !!(item.is_ads === true || item.ads_info || item.ad_info || item.model_type === "ads" ||
+    item.model_type === "ad" || (note && (note.is_ads === true || note.ads_info)));
 };
 
 const filterAds = (list) => (Array.isArray(list) ? list.filter((i) => !isAd(i)) : list);
 
+const postpone = (o) => {
+  if (!o || typeof o !== "object") return false;
+  o.start_time = FAR_FUTURE;
+  o.end_time = FAR_FUTURE + 86399;
+  return true;
+};
+
 const pushSplashAway = (groups) => {
   if (!Array.isArray(groups)) return;
-  for (const g of groups) {
-    if (!g || typeof g !== "object") continue;
-    g.start_time = FAR_FUTURE;
-    g.end_time = FAR_FUTURE + 86399;
-    for (const ad of g.ads || []) {
-      if (!ad || typeof ad !== "object") continue;
-      ad.start_time = FAR_FUTURE;
-      ad.end_time = FAR_FUTURE + 86399;
-    }
-  }
+  for (const g of groups) if (postpone(g)) for (const ad of g.ads || []) postpone(ad);
 };
 
 const deleteKeys = (data, keys) => {
