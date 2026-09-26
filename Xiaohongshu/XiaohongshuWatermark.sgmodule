@@ -13,6 +13,8 @@
 # 搜索页广告横幅、首页运营横幅
 ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/search\/banner_list data-type=text data="{}" status-code=200
 ^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/guide\/user_banner data-type=text data="{}" status-code=200
+# 详情预加载会绕过 imagefeed 去水印改写，置空后客户端回退到 imagefeed
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d+\/note\/detailfeed\/preload(\?|$) data-type=text data="{}" status-code=200
 # 客户端叠加水印用的配置图，替换为 1px 透明 GIF 使水印无法生成
 ^https?:\/\/ci\.xiaohongshu\.com\/system_config\/watermark data-type=tiny-gif status-code=200
 
