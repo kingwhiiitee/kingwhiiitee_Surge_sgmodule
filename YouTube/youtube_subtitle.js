@@ -439,8 +439,9 @@ const translateChunk = async (lines, deadline, srcLang) => {
 };
 
 // 分批并发翻译；返回 Map(原文→译文)，失败的行不放入 map（回退原文）。
-// deadline 之后不再取新批次/重试，已完成的行照常可用
-const translateAll = async (uniqueLines, deadline, srcLang) => {
+// deadline 之后不再取新批次/重试，已完成的行照常可用。
+// onChunk(chunkLines, translatedLines) 在每个分块完成时回调（用于边翻边写缓存）
+const translateAll = async (uniqueLines, deadline, srcLang, onChunk) => {
   const chunks = [];
   for (let i = 0; i < uniqueLines.length; i += chunkLines) {
     chunks.push(uniqueLines.slice(i, i + chunkLines));
@@ -453,6 +454,7 @@ const translateAll = async (uniqueLines, deadline, srcLang) => {
       while (cursor < chunks.length && Date.now() < deadline - 3000) {
         const i = cursor++;
         results[i] = await translateChunk(chunks[i], deadline, srcLang);
+        if (results[i] && onChunk) onChunk(chunks[i], results[i]);
       }
     }
   );
@@ -573,28 +575,10 @@ const saveCache = (c) => {
     const missing = unique.filter((l) => typeof dict[l] !== "string" || !dict[l]);
     log(`${v} ${lang} kind=${kind || "manual"} cues=${texts.length} unique=${unique.length} miss=${missing.length} -> ${cfg.provider}/${model} -> ${cfg.targetLang}`);
 
-    if (missing.length) {
-      const deadline = Date.now() + cfg.budgetMs;
-      log(`translate start ${ms()}ms`);
-      const got = await translateAll(missing, deadline, lang);
-      log(`translate done ${ms()}ms`);
-      for (const [k, t] of got) dict[k] = t;
-    }
-
-    const map = new Map();
-    for (const l of unique) {
-      const t = dict[l];
-      if (typeof t === "string" && t) map.set(l, t);
-    }
-    if (!map.size) {
-      log("no translations available, keep original");
-      return finish(body, "no-translation");
-    }
-    const merged = parsed.rebuild(map);
-    log(`rebuild done ${ms()}ms out=${merged.length}`);
-
-    if (cache) {
-      // 命中也刷新 LRU；保存前重读缓存再合并——缩小并发覆盖窗口。
+    // 每个分块完成即把已翻的行写进缓存：App 因自身请求超时断开时脚本可能
+    // 被中途掐断，增量落盘保证已翻进度不丢，下次开字幕从断点续翻收敛
+    const persistDict = () => {
+      // 保存前重读缓存再合并——缩小并发覆盖窗口。
       // 只合并本请求字幕用到/新翻的行：整体回写旧快照会把并发方已淘汰的行
       // 复活到最新位并挤掉新行；本组被并发方淘汰（existing 缺失）时才用全量
       // dict 恢复，顺带保证 order 与 data 不产生幽灵项
@@ -618,7 +602,34 @@ const saveCache = (c) => {
       }
       fresh.data[dictKey] = mergedDict;
       saveCache(fresh);
+    };
+
+    if (missing.length) {
+      const deadline = Date.now() + cfg.budgetMs;
+      log(`translate start ${ms()}ms`);
+      await translateAll(missing, deadline, lang, (chs, arr) => {
+        chs.forEach((l, j) => {
+          dict[l] = arr[j];
+        });
+        if (cache) persistDict();
+      });
+      log(`translate done ${ms()}ms`);
     }
+
+    const map = new Map();
+    for (const l of unique) {
+      const t = dict[l];
+      if (typeof t === "string" && t) map.set(l, t);
+    }
+    if (!map.size) {
+      log("no translations available, keep original");
+      return finish(body, "no-translation");
+    }
+    const merged = parsed.rebuild(map);
+    log(`rebuild done ${ms()}ms out=${merged.length}`);
+
+    // 终写一次：兜住本轮新增行并刷新 LRU（纯命中场景也靠它刷新热度）
+    if (cache) persistDict();
     if (cfg.mode === "passthrough") return finish(body, "mode=passthrough");
     return finish(merged, "ok");
   } catch (e) {
