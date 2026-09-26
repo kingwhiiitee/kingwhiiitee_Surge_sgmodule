@@ -2,18 +2,17 @@
 #!desc= 去除图文/视频笔记、实况照片与评论区图片的下载水印，解除媒体保存限制；去除开屏广告、首页/关注/搜索信息流推广笔记、笔记下方带货与商业合作挂件，拦截广告资源、惊喜盒子、营销弹窗与搜索页广告横幅。需开启 MITM 并信任证书；如未生效请清除小红书缓存后重试。
 #!author= kingwhiiitee
 
-[URL Rewrite]
-# 广告资源、广告互动上报
-^https?:\/\/(edith|www)\.xiaohongshu\.com\/api\/sns\/v\d\/ads\/ - reject-dict
-^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/tag\/ads_engage - reject-dict
-# 惊喜盒子、营销弹窗
-^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/surprisebox\/ - reject-dict
-^https?:\/\/(edith|www)\.xiaohongshu\.com\/api\/marketing\/box\/trigger - reject-dict
-# 搜索页广告横幅、首页运营横幅
-^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/search\/banner_list - reject-dict
-^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/guide\/user_banner - reject-dict
-
 [Map Local]
+# 广告拦截：Surge 的 URL Rewrite 不支持 reject-dict，改为本地返回空 JSON
+# 广告资源、广告互动上报
+^https?:\/\/(edith|www)\.xiaohongshu\.com\/api\/sns\/v\d\/ads\/ data-type=text data="{}" status-code=200
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/tag\/ads_engage data-type=text data="{}" status-code=200
+# 惊喜盒子、营销弹窗
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/surprisebox\/ data-type=text data="{}" status-code=200
+^https?:\/\/(edith|www)\.xiaohongshu\.com\/api\/marketing\/box\/trigger data-type=text data="{}" status-code=200
+# 搜索页广告横幅、首页运营横幅
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/search\/banner_list data-type=text data="{}" status-code=200
+^https?:\/\/edith\.xiaohongshu\.com\/api\/sns\/v\d\/guide\/user_banner data-type=text data="{}" status-code=200
 # 客户端叠加水印用的配置图，替换为 1px 透明 GIF 使水印无法生成
 ^https?:\/\/ci\.xiaohongshu\.com\/system_config\/watermark data-type=tiny-gif status-code=200
 
