@@ -33,45 +33,50 @@ const pushSplashAway = (groups) => {
   }
 };
 
-const rewrite = (url, obj) => {
-  const data = obj?.data;
-  if (!data) return;
+const deleteKeys = (data, keys) => {
+  for (const key of keys) delete data[key];
+};
 
-  if (url.includes("/system_service/splash_config")) {
+const filterItems = (data) => {
+  if (Array.isArray(data.items)) data.items = filterAds(data.items);
+};
+
+const WIDGET_AD_KEYS = ["goods_card_v2", "goods_card", "cooperate_binds", "cooperate_comment_component", "note_next_step"];
+
+// 按顺序匹配，splash_config 必须排在 config 之前；handler 返回新的 data 时替换原值
+const ROUTES = [
+  ["/system_service/splash_config", (data) => {
     pushSplashAway(data.ads_groups);
     pushSplashAway(data.splash_groups);
-  } else if (url.includes("/system_service/config")) {
-    for (const key of ["splash", "loading_img"]) delete data[key];
-  } else if (url.includes("/homefeed")) {
-    if (Array.isArray(data)) obj.data = filterAds(data);
-    else data.items = filterAds(data.items);
-  } else if (url.includes("/followfeed")) {
-    data.items = filterAds(data.items);
-  } else if (url.includes("/search/notes")) {
-    data.items = filterAds(data.items);
-  } else if (url.includes("/note/widgets")) {
-    for (const key of ["goods_card_v2", "goods_card", "cooperate_binds", "cooperate_comment_component", "note_next_step"]) {
-      delete data[key];
-    }
+  }],
+  ["/system_service/config", (data) => deleteKeys(data, ["splash", "loading_img"])],
+  ["/homefeed", (data) => (Array.isArray(data) ? filterAds(data) : filterItems(data))],
+  ["/followfeed", filterItems],
+  ["/search/notes", filterItems],
+  ["/note/widgets", (data) => deleteKeys(data, WIDGET_AD_KEYS)],
+];
+
+const parseBody = (body) => {
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    return null;
   }
 };
 
-const url = $request.url;
-let obj;
-try {
-  obj = JSON.parse($response.body);
-} catch (e) {
-  obj = null;
-}
-
-if (!obj) {
-  $done({});
-} else {
+const main = () => {
+  const url = $request.url;
+  const route = ROUTES.find(([path]) => url.includes(path));
+  const obj = route && parseBody($response.body);
+  if (!obj?.data || typeof obj.data !== "object") return $done({});
   try {
-    rewrite(url, obj);
+    const next = route[1](obj.data);
+    if (next !== undefined) obj.data = next;
     $done({ body: JSON.stringify(obj) });
   } catch (e) {
     console.log(`[小红书去广告] ${url} 处理失败: ${e}`);
     $done({});
   }
-}
+};
+
+main();
